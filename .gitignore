@@ -1,0 +1,29 @@
+# --- 資料集與大型二進位檔 ---
+# 原始資料集通常體積龐大且不應上傳至 GitHub
+TuSimple/
+
+# --- 訓練與快取 (Cache) ---
+# 包含訓練中產生的 .pkl 模型權重檔與資料快取
+cache/
+*.pkl
+*.pth
+
+# --- 運算結果與除錯影像 (Results) ---
+# 訓練與測試過程中產生的視覺化結果 (例如 lane_debug 目錄)
+results/
+detections/
+images/
+
+# --- Python 環境與編譯快取 ---
+# 自動產生的 Python 編譯檔與目錄
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.ipynb_checkpoints/
+
+# --- 系統與開發工具檔案 ---
+.DS_Store
+.vscode/
+.idea/

@@ -1,0 +1,55 @@
+{
+    "system": {
+        "dataset": "TUSIMPLE",
+        "batch_size": 16,  
+        "chunk_sizes": [16], 
+        "sampling_function": "kp_detection",
+
+        "train_split": "train+val",
+        "val_split": "val",
+        "test_split": "test",
+
+        "learning_rate": 0.0001,
+        "decay_rate": 10,
+
+        "val_iter": 100,
+        "display": 100,
+
+        "opt_algo": "adam",
+        "prefetch_size": 5,
+
+        "max_iter": 500000,
+        "stepsize": 450000,
+        "snapshot": 5000,
+
+        "cache_dir": "./cache",
+        "result_dir": "./results",
+        "data_dir": "../../",
+
+        "//": "=== 新增這一行，可填: fasternet_t0, fasternet_t1, fasternet_t2, fasternet_s, fasternet_m, fasternet_l ===",
+        "backbone": "fasternet_t2",
+
+        "res_layers": [1, 2, 2, 2],
+        "res_dims": [8, 16, 32, 64],
+        "res_strides": [1, 2, 2, 2],
+        
+        "//": "=== 修改開始: 提升精準度的關鍵參數 ===",
+        "attn_dim": 256,         
+        "dim_feedforward": 1024, 
+        "kps_dim": 8,
+        "num_heads": 8,          
+        "enc_layers": 6,         
+        "dec_layers": 6,         
+        "//": "=== 修改結束 ===",
+
+        "block": "BasicBlock",
+        "num_queries": 7
+    },
+    
+    "db": {
+        "rand_color": true,
+        "input_size": [360, 640], 
+        "test_scales": [1],
+        "categories": 1
+    }
+}
