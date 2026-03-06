@@ -1,177 +1,112 @@
-**LSTR**: Lane Shape Prediction with Transformers
-=======
+這是一份根據您提供的指令與專案現況整理的 `README.md` 內容。這份文件結合了原始 LSTR 的基礎說明以及您在 **RE-LSTR** 研究中所使用的具體操作流程與目錄結構。
 
-![LSTR](.github/logo.png)
+---
 
-* 😎End-to-end architecture: Directly output lane shape parameters.
-* ⚡Super lightweight: The number of model parameters is only 765,787.
-* ⚡Super low complexity: The number of MACs (1 MAC = 2 FLOP) is only 574.280M.
-* 😎Training friendly: Lower GPU memory cost. Input (360, 640, 3) with batch_size 16 uses 1245MiB GPU usages.
+# RE-LSTR: Robust & Efficient Lane Shape Prediction with Transformers
 
-PyTorch(1.5.0) training, evaluating and pretrained models for LSTR (Lane Shape Prediction with Transformers).
-We streamline the lane detection to a single-stage framework by proposing a novel lane shape model that achieves 96.18
-TuSimple accuracy.
+本專案基於 **LSTR** 進行改良，導入了 **FasterNet** 輕量化骨幹、**Stable Diffusion** 資料增強（SPDA）以及運算管線（Pipeline）優化，旨在提升台灣複雜道路環境下的偵測精度與硬體運算效率。
 
-For details see [End-to-end Lane Shape Prediction with Transformers](https://arxiv.org/pdf/2011.04233.pdf)
-by Ruijin Liu, Zejian Yuan, Tie Liu, Zhiliang Xiong.
+## 📂 專案目錄結構
 
-
-## LSTR for CULane
-
-***Please read carefully!***
-
-This branch mainly provides training, evaluating and pretrained models of LSTR for CULane dataset.
- 
-* The implement is a vanilla version, and almost all of the hyper-parameters are not fine-tuned.
-The uploaded model file was trained a few days ago, which achieves 0.64 CULane Fmeasure.
-
-* Our paper does not focus on the CULane dataset, and my point in providing the code and model file 
-is primarily to give you a template to play with other datasets.
-
-* I may be interesting in tweaking the code to upload code and models that would get better 
-performance, but that's not my top priority right now, so please do not be pushy and ask questions
-about how to improve the performance on CULane dataset.
-
-## Model Zoo
-
-We provide the baseline LSTR_CULANE model file (trained on CULane train and val sets after 500000 iterations) in
-the ./cache/nnet/LSTR_CULANE/LSTR_CULANE_500000.pkl (~3.1MB).
-
-## Data Preparation
-
-Download and extract CULane train, val and test with annotations from
-[CULane](https://xingangpan.github.io/projects/CULane.html).
-
-We expect the directory structure to be the following:
-```
-CULane/
-    driver_23_30frame/
-    driver_37_30frame/
-    driver_100_30frame/
-    driver_161_90frame/
-    driver_182_30frame/
-    driver_193_90frame/
-    list/
-        test_split/
-        test.txt
-        test_img.txt
-        train.txt
-        train_gt.txt
-        val.txt
-        val_gt.txt
-TuSimple/
-    LaneDetection/
-        clips/
-        label_data_0313.json
-        label_data_0531.json
-        label_data_0601.json
-        test_label.json
-    LSTR/
-```
-
-## Set Envirionment
-
-* Linux ubuntu 16.04
-
+```Plaintext
+.
+├── cache/              # 訓練快照 (.pkl) 與資料集快取檔案
+├── config/             # 系統與資料庫配置檔 (JSON)
+│   └── LSTR.json       # 核心參數設定（如權重、層數、學習率）
+├── db/                 # 資料集加載與標籤處理邏輯
+│   ├── datasets.py     # 資料集註冊入口
+│   ├── detection.py    # 基礎偵測類別
+│   └── tusimple.py     # TuSimple 資料集專用處理（含標記轉參數邏輯）
+├── models/             # 神經網路架構定義
+│   ├── LSTR.py         # 模型實例化入口與參數初始化
+│   └── py_utils/       # 核心組件
+│       ├── kp.py       # 主架構定義（含 Backbone 與 Transformer 交互）
+│       ├── fasternet.py# (新增) 改良型輕量化 PConv 骨幹網路
+│       └── transformer.py# Transformer 編解碼器實作
+├── sample/             # 訓練採樣與資料增強
+│   └── tusimple.py     # 訓練時的動態採樣與標籤預處理
+├── images/             # 放置自定義測試影像
+├── detections/         # 自定義影像的偵測結果輸出
+├── results/            # 訓練過程中的可視化除錯圖
+├── train.py            # 訓練啟動腳本
+└── test.py             # 測試、評估與推論腳本
 
 ```
-conda env create --name lstr --file environment.txt
-```
 
-After you create the environment, activate it
+---
 
-```
+## 🚀 環境準備
+
+在使用前請確保已安裝相關環境並啟用：
+
+```bash
+# 啟用 Conda 環境
 conda activate lstr
+
+# 檢查系統資源負載 (CPU / GPU)
+htop
+nvidia-smi
+
 ```
 
-Then
+---
+
+## 🏋️ 訓練 (Training)
+
+啟動模型訓練，預設會讀取 `config/LSTR.json`。
+
+```bash
+python train.py LSTR
 
 ```
-pip install -r requirements.txt
+
+> **注意**：本專案已優化資料處理順序，將擬合運算提前至預處理階段，以解決 GPU 等待 CPU 的效能瓶頸。
+
+---
+
+## 🔍 測試與評估 (Testing & Evaluation)
+
+### 1. 跑數據與性能評估 (TuSimple 格式)
+
+針對測試集進行評估並輸出準確率指標：
+
+```bash
+# 跑數據 (指定 iteration 與配置文件)
+python test.py LSTR --testiter 200000 --split testing --modality eval cfg_file: ./config/LSTR.json
+
 ```
 
-## Training and Evaluation
+### 2. 可視化測試結果
 
-To train a model:
+可視化預測的車道線並顯示參數（$k, f, m \dots$）：
 
-(if you only want to use the train set, please see ./config/LSTR_CULANE.json and
-set "train_split": "train")
-```
-python train.py LSTR_CULANE
-```
-* Visualized images are in ./results during training.
-* Saved model files (every 5000 iterations) are in ./cache during training.
+```bash
+# 基本可視化
+python test.py LSTR --testiter 200000 --split testing --modality eval
 
-To train a model from a snapshot model file:
-```
-python train.py LSTR_CULANE --iter 500000
+# 儲存偵測結果圖至 ./results/LSTR/500000/testing/lane_debug
+python test.py LSTR --testiter 500000 --modality eval --split testing --debug
+
 ```
 
-To evaluate (GPU 603MiB usage when evaluating single image iteratively):
-```
-python test.py LSTR_CULANE --testiter 500000 --modality eval --split testing
-```
-then 
-```
-cd lane_evaluation
-```
-If you want to obtain the overall F1-measure:
-```
-bash run.sh
-```
-If you want to valid the splitting performance:
-```
-bash Run.sh
-```
-Please refer to [CULane](https://xingangpan.github.io/projects/CULane.html) to compile the evaluating environment.
+### 3. 對自定義影像進行偵測
 
+將您想測試的照片放入 `./images` 資料夾中，結果將輸出至 `./detections`：
 
-To evaluate and save detected images in ./results/LSTR_CULANE/500000/testing/lane_debug:
-```
-python test.py LSTR_CULANE --testiter 500000 --modality eval --split testing --debug
+```bash
+python test.py LSTR --testiter 500000 --modality images --image_root ./ --debug
+
 ```
 
-* Demo (displayed parameters are rounded to three significant figures.)
+---
 
-![Demo](.github/driver_100_30frame_05251609_0446.MP4_03330.jpg)
+## 🛠️ 技術貢獻 (RE-LSTR 亮點)
 
-![Demo](.github/driver_100_30frame_05251627_0452.MP4_04020.jpg)
+* **SPDA 資料增強**：整合 Stable Diffusion 生成模擬台灣雨天、大太陽、夜間等 10 種環境，解決資料分佈不均問題。
+* **FasterNet Backbone**：使用 PConv 優化特徵提取，顯著降低 GPU 運算負擔並提升推論速度。
+* **Pipeline 優化**：重組資料處理順序，改善原本 CPU 滿載而 GPU 利用率低的問題。
+* **幾何精度改善**：優化曲線擬合參數調整，提升遠景地平線處的車道擬合精確度。
 
-![Demo](.github/driver_100_30frame_05251642_0457.MP4_04620.jpg)
+---
 
-
-To evaluate and save decoder attention maps (store --debugEnc to visualize encoder attention maps):
-```
-python test.py LSTR_CULANE --testiter 500000 --modality eval --split testing --debug --debugDec
-```
-
-To evaluate on a set of images (store your images in ./images, then the detected results will be saved in ./detections):
-```
-python test.py LSTR_CULANE --testiter 500000 --modality images --image_root ./ --debug
-```
-
-## Citation
-```
-@InProceedings{LSTR,
-author = {Ruijin Liu and Zejian Yuan and Tie Liu and Zhiliang Xiong},
-title = {End-to-end Lane Shape Prediction with Transformers},
-booktitle = {WACV},
-year = {2021}
-}
-```
-
-## License
-LSTR is released under BSD 3-Clause License. Please see [LICENSE](LICENSE) file for more information.
-
-## Contributing
-We actively welcome your pull requests!
-
-## Acknowledgements
-
-[DETR](https://github.com/facebookresearch/detr)
-
-[PolyLaneNet](https://github.com/lucastabelini/PolyLaneNet)
-
-[CornerNet](https://github.com/princeton-vl/CornerNet)
-
-[CULane](https://xingangpan.github.io/projects/CULane.html)
+**您是否需要我幫您補充關於 FasterNet 的具體安裝步驟或是環境依賴表（requirements.txt）？**
