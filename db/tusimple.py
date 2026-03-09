@@ -186,18 +186,28 @@ class TUSIMPLE(DETECTION):
         categories = anno['categories'] if 'categories' in anno else [1] * len(old_lanes)
         old_lanes = zip(old_lanes, categories)
         old_lanes = filter(lambda x: len(x[0]) > 0, old_lanes)
-        lanes = np.ones((self.max_lanes, 1 + 2 + 2 * self.max_points), dtype=np.float32) * -1e5
+        # 1 (類別) + 2 (上下邊界) + 4 (a, b, c, d 四個係數) = 7
+        lanes = np.ones((self.max_lanes, 7), dtype=np.float32) * -1e5
         lanes[:, 0] = 0
         old_lanes = sorted(old_lanes, key=lambda x: x[0][0][0])
         for lane_pos, (lane, category) in enumerate(old_lanes):
             lower, upper = lane[0][1], lane[-1][1]
             xs = np.array([p[0] for p in lane]) / img_w
             ys = np.array([p[1] for p in lane]) / img_h
+            
+            # --- 新增擬合邏輯 ---
+            # 使用三次多項式擬合：x = a*y^3 + b*y^2 + c*y + d
+            # np.polyfit(自變數, 因變數, 次數)，會回傳 [a, b, c, d]
+            coeffs = np.polyfit(ys, xs, 3) 
+            # 強制將係數限制在合理範圍（例如 -2 到 2），這對穩定 Transformer 非常重要
+            coeffs = np.clip(coeffs, -2.0, 2.0)
+            
             lanes[lane_pos, 0] = category
             lanes[lane_pos, 1] = lower / img_h
             lanes[lane_pos, 2] = upper / img_h
-            lanes[lane_pos, 3:3 + len(xs)] = xs
-            lanes[lane_pos, (3 + self.max_points):(3 + self.max_points + len(ys))] = ys
+            
+            # 將 4 個係數存入第 3 到第 6 個索引位置
+            lanes[lane_pos, 3:7] = coeffs
 
         new_anno = {
             'path': anno['path'],
@@ -244,10 +254,12 @@ class TUSIMPLE(DETECTION):
             if lane[0] == 0:
                 continue
             lanecurve = lane[3:]
-            lane_pred = (lanecurve[0] / (ys - lanecurve[1]) ** 2
-                         + lanecurve[2] / (ys - lanecurve[1])
-                         + lanecurve[3]
-                         + lanecurve[4] * ys - lanecurve[5]) * self.img_w
+            # 修改後的三次多項式公式：x = a*y^3 + b*y^2 + c*y + d
+            # 注意：lanecurve[0] 是 a, [1] 是 b, [2] 是 c, [3] 是 d
+            lane_pred = (lanecurve[0] * ys**3 
+                        + lanecurve[1] * ys**2 
+                        + lanecurve[2] * ys 
+                        + lanecurve[3]) * self.img_w
             lane_pred[(ys < lane[1]) | (ys > lane[2])] = -2
             lanes.append(list(lane_pred))
 
@@ -332,68 +344,63 @@ class TUSIMPLE(DETECTION):
             return img
 
         # Draw predictions
-        # pred = pred[pred[:, 0] != 0]  # filter invalid lanes
-        pred = pred[pred[:, 0].astype(int) == 1]
+        pred = pred[pred[:, 0] > 0.5] # 信心值門檻，可視情況調整
         matches, accs, _ = self.get_metrics(pred, idx)
         overlay = img.copy()
+        
         cv2.rectangle(img, (5, 10), (5 + 1270, 25 + 30 * pred.shape[0] + 10), (255, 255, 255), thickness=-1)
-        cv2.putText(img, 'Predicted curve parameters:', (10, 30), fontFace=cv2.FONT_HERSHEY_PLAIN,
+        cv2.putText(img, 'RE-LSTR Cubic Polynomial Results:', (10, 30), fontFace=cv2.FONT_HERSHEY_PLAIN,
                     fontScale=1.5, color=(0, 0, 0), thickness=2)
-        for i, lane in enumerate(pred):
-            if matches[i]:
-                # color = colors[i]
-                color = PRED_HIT_COLOR
-            else:
-                color = PRED_MISS_COLOR
-            lane = lane[1:]  # remove conf
-            lower, upper = lane[0], lane[1]
-            lane = lane[2:]  # remove upper, lower positions
 
-            # generate points from the polynomial
+        for i, lane in enumerate(pred):
+            color = PRED_HIT_COLOR if matches[i] else PRED_MISS_COLOR
+            
+            # --- 核心修正：精確提取參數 ---
+            # 假設 pred 結構為 [conf, lower, upper, a, b, c, d]
+            lower = lane[1]
+            upper = lane[2]
+            a, b, c, d = lane[3], lane[4], lane[5], lane[6]
+            # ----------------------------
+
+            # 產生點 (y 使用歸一化座標 0~1)
             ys = np.linspace(lower, upper, num=100)
-            points = np.zeros((len(ys), 2), dtype=np.int32)
-            points[:, 1] = (ys * img_h).astype(int)
-            points[:, 0] = ((lane[0] / (ys - lane[1]) ** 2 + lane[2] / (ys - lane[1]) + lane[3] + lane[4] * ys -
-                             lane[5]) * img_w).astype(int)
-            points = points[(points[:, 0] > 0) & (points[:, 0] < img_w)]
+            
+            # 三次多項式計算：x = ay^3 + by^2 + cy + d
+            xs = a * (ys**3) + b * (ys**2) + c * ys + d
+            
+            # 轉換為像素座標
+            # 
+            pts_x = (xs * img_w).astype(int)
+            pts_y = (ys * img_h).astype(int)
+
+            # 濾除無效點
+            valid = (pts_x > 0) & (pts_x < img_w) & (pts_y > 0) & (pts_y < img_h)
+            pts_x, pts_y = pts_x[valid], pts_y[valid]
+            
+            points = np.stack([pts_x, pts_y], axis=-1)
 
             # draw lane with a polyline on the overlay
-            for current_point, next_point in zip(points[:-1], points[1:]):
-                overlay = cv2.line(overlay, tuple(current_point), tuple(next_point), color=color, thickness=7)
+            if len(points) > 1:
+                for current_point, next_point in zip(points[:-1], points[1:]):
+                    overlay = cv2.line(overlay, tuple(current_point), tuple(next_point), color=color, thickness=5)
 
-            # draw class icon
-            if cls_pred is not None and len(points) > 0:
-                class_icon = self.get_class_icon(cls_pred[i])
-                class_icon = cv2.resize(class_icon, (32, 32))
-                mid = tuple(points[len(points) // 2] - 60)
-                x, y = mid
-
-                img[y:y + class_icon.shape[0], x:x + class_icon.shape[1]] = class_icon
-
-            # draw lane ID
+            # draw lane ID and info
             if len(points) > 0:
-                cv2.putText(img, str(i), tuple(points[len(points)//3]), fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=1, color=color,
-                            thickness=3)
-                content = "{}: k''={:.3}, f''={:.3}, m''={:.3}, n'={:.3}, b''={:.3}, b'''={:.3}, alpha={}, beta={}".format(
-                    str(i), lane[0], lane[1], lane[2], lane[3], lane[4], lane[5], int(lower * img_h),
-                    int(upper * img_w)
-                )
+                cv2.putText(img, str(i), tuple(points[len(points)//3]), fontFace=cv2.FONT_HERSHEY_SIMPLEX, 
+                            fontScale=1, color=color, thickness=3)
+                
+                # 更新除錯文字
+                content = "ID {}: a={:.3f}, b={:.3f}, c={:.3f}, d={:.3f}".format(str(i), a, b, c, d)
                 cv2.putText(img, content, (10, 30 * (i + 2)), fontFace=cv2.FONT_HERSHEY_PLAIN,
                             fontScale=1.5, color=color, thickness=2)
 
-            # draw lane accuracy
-            if len(points) > 0:
-                cv2.putText(img,
-                            '{:.2f}'.format(accs[i] * 100),
-                            tuple(points[len(points) // 2] - 30),
-                            fontFace=cv2.FONT_HERSHEY_SIMPLEX,
-                            fontScale=1,
-                            color=color,
-                            thickness=3)
+                # draw accuracy
+                cv2.putText(img, '{:.2f}'.format(accs[i] * 100), tuple(points[len(points) // 2] - 30),
+                            fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=1, color=color, thickness=3)
+
         # Add lanes overlay
         w = 0.5
         img = ((1. - w) * img + w * overlay).astype(np.uint8)
-
         return img
 
     def pred2tusimpleformat(self, idx, pred, runtime):

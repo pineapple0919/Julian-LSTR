@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python test.py
 import os
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"

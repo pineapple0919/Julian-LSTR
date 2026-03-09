@@ -1,7 +1,3 @@
-這是一份根據您提供的指令與專案現況整理的 `README.md` 內容。這份文件結合了原始 LSTR 的基礎說明以及您在 **RE-LSTR** 研究中所使用的具體操作流程與目錄結構。
-
----
-
 # RE-LSTR: Robust & Efficient Lane Shape Prediction with Transformers
 
 本專案基於 **LSTR** 進行改良，導入了 **FasterNet** 輕量化骨幹、**Stable Diffusion** 資料增強（SPDA）以及運算管線（Pipeline）優化，旨在提升台灣複雜道路環境下的偵測精度與硬體運算效率。

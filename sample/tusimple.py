@@ -46,6 +46,12 @@ def kp_detection(db, k_ind):
             new_anno = {'path': item['path'], 'lanes': db.linestrings_to_lanes(line_strings)}
             new_anno['categories'] = item['categories']
             label = db._transform_annotation(new_anno, img_wh=(input_size[1], input_size[0]))['label']
+            # --- 新增：數值安全裁剪 (防止 RankWarning 導致的數值爆炸) ---
+            # 索引 3:7 是三次多項式的係數 [a, b, c, d]
+            # 限制在 [-10, 10] 之間可以有效防止 Matcher 出現 NaN
+            label[:, 3:7] = np.clip(label[:, 3:7], -10, 10)
+            # -------------------------------------------------------
+
 
         # clip polys
         tgt_ids   = label[:, 0]

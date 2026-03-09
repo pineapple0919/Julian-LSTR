@@ -1,3 +1,4 @@
+# tusimple.py
 import os
 import torch
 import cv2
@@ -45,15 +46,21 @@ class PostProcess(nn.Module):
     @torch.no_grad()
     def forward(self, outputs, target_sizes):
         out_logits, out_curves = outputs['pred_logits'], outputs['pred_curves']
+        # 這裡只取 batch 的第一張圖進行示範，若 batch > 1 需處理索引
         out_logits = out_logits[0].unsqueeze(0)
         out_curves = out_curves[0].unsqueeze(0)
-        assert len(out_logits) == len(target_sizes)
-        assert target_sizes.shape[1] == 2
+        
         prob = F.softmax(out_logits, -1)
         scores, labels = prob.max(-1)
-        labels[labels != 1] = 0
-        results = torch.cat([labels.unsqueeze(-1).float(), out_curves], dim=-1)
-
+        
+        # 假設背景類別是最後一個，類別 1 是車道線
+        # 如果你訓練時類別設為 1 (即 binary)，則 labels == 0 可能是線
+        # 請根據你 detr_loss.py 的 eos_coef 設定確認
+        idx = (labels != out_logits.shape[-1] - 1) 
+        
+        # 這裡的 results 會是 [1, num_queries, 1 + lsp_dim]
+        # 也就是 [置信度, lower, upper, a, b, c, d]
+        results = torch.cat([scores.unsqueeze(-1), out_curves], dim=-1)
         return results
 
 def kp_detection(db, nnet, result_dir, debug=False, evaluator=None, repeat=1,

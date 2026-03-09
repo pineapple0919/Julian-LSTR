@@ -192,8 +192,14 @@ class kp(nn.Module):
 
         # 注意：你這裡用了 num_cls + 1，如果原本是 num_cls，請確認這是否為你刻意修改
         self.class_embed    = nn.Linear(hidden_dim, num_cls + 1)
-        self.specific_embed = MLP(hidden_dim, hidden_dim, lsp_dim - 4, mlp_layers)
-        self.shared_embed   = MLP(hidden_dim, hidden_dim, 4, mlp_layers)
+        self.specific_embed = MLP(hidden_dim, hidden_dim, lsp_dim, mlp_layers)
+        # --- 新增：權重初始化 ---
+        for m in self.specific_embed.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.constant_(m.weight, 0)
+                nn.init.constant_(m.bias, 0)
+        # ----------------------
+        # self.shared_embed   = MLP(hidden_dim, hidden_dim, 4, mlp_layers)
 
     def _make_layer(self, block, planes, blocks, stride=1):
         downsample = None
@@ -211,38 +217,26 @@ class kp(nn.Module):
         return nn.Sequential(*layers)
 
     def _train(self, *xs, **kwargs):
-        # images = xs[0]  # B 3 360 640
-        # masks  = xs[1]  # B 1 360 640
+        images = xs[0]
+        masks  = xs[1]
 
-        # p = self.conv1(images)  # B 16 180 320
-        # p = self.bn1(p)  # B 16 180 320
-        # p = self.relu(p)  # B 16 180 320
-        # p = self.maxpool(p)  # B 16 90 160
-        # p = self.layer1(p)  # B 16 90 160
-        # p = self.layer2(p)  # B 32 45 80
-        # p = self.layer3(p)  # B 64 23 40
-        # p = self.layer4(p)  # B 128 12 20
-        # pmasks = F.interpolate(masks[:, 0, :, :][None], size=p.shape[-2:]).to(torch.bool)[0]
-
-        images = xs[0]  # B 3 360 640
-        masks  = xs[1]  # B 1 360 640
-
-        # === 替換開始: 使用 FasterNet 提取特徵 ===
-        features = self.backbone(images) # FasterNet 回傳一個列表 list
-        p = features[-1]                 # 取出最後一層特徵 (Stride 32)
-        # === 替換結束 ===
+        # FasterNet 特徵提取
+        features = self.backbone(images)
+        p = features[-1]
 
         pmasks = F.interpolate(masks[:, 0, :, :][None], size=p.shape[-2:]).to(torch.bool)[0]
-        # ... 以下程式碼保持不變 ...
         pos    = self.position_embedding(p, pmasks)
+        
+        # Transformer 運算
         hs, _, weights  = self.transformer(self.input_proj(p), pmasks, self.query_embed.weight, pos)
+        
+        # 輸出層
         output_class    = self.class_embed(hs)
-        output_specific = self.specific_embed(hs)
-        output_shared   = self.shared_embed(hs)
-        output_shared   = torch.mean(output_shared, dim=-2, keepdim=True)
-        output_shared   = output_shared.repeat(1, 1, output_specific.shape[2], 1)
-        output_specific = torch.cat([output_specific[:, :, :, :2], output_shared, output_specific[:, :, :, 2:]], dim=-1)
+        output_specific = self.specific_embed(hs) # 這裡直接輸出 6 個參數 [dec, batch, query, 6]
+
+        # 這裡直接包裝成輸出字典
         out = {'pred_logits': output_class[-1], 'pred_curves': output_specific[-1]}
+        
         if self.aux_loss:
             out['aux_outputs'] = self._set_aux_loss(output_class, output_specific)
         return out, weights

@@ -67,42 +67,31 @@ class SetCriterion(nn.Module):
         return losses
 
     def loss_curves(self, outputs, targets, indices, num_curves):
-        """Compute the losses related to the bounding boxes, the L1 regression loss and the GIoU loss
-           targets dicts must contain the key "boxes" containing a tensor of dim [nb_target_boxes, 4]
-           The target boxes are expected in format (center_x, center_y, h, w), normalized by the image size.
-        """
         assert 'pred_curves' in outputs
         idx = self._get_src_permutation_idx(indices)
-        src_lowers = outputs['pred_curves'][:, :, 0][idx]
-        src_uppers = outputs['pred_curves'][:, :, 1][idx]
-        src_polys  = outputs['pred_curves'][:, :, 2:][idx]
-        target_lowers = torch.cat([tgt[:, 1][i] for tgt, (_, i) in zip(targets, indices)], dim=0)
-        target_uppers = torch.cat([tgt[:, 2][i] for tgt, (_, i) in zip(targets, indices)], dim=0)
-        target_points = torch.cat([tgt[:, 3:][i] for tgt, (_, i) in zip(targets, indices)], dim=0)
+        
+        # 預測值: [batch * matched_queries, 6]
+        # 包含 [lower, upper, a, b, c, d]
+        src_params = outputs['pred_curves'][idx]
 
-        target_xs = target_points[:, :target_points.shape[1] // 2]
-        ys = target_points[:, target_points.shape[1] // 2:].transpose(1, 0)
-        valid_xs = target_xs >= 0
-        weights = (torch.sum(valid_xs, dtype=torch.float32) / torch.sum(valid_xs, dim=1, dtype=torch.float32)) ** 0.5
-        weights = weights / torch.max(weights)
+        # --- 新增：強制只取前 6 維，對齊 [lower, upper, a, b, c, d] ---
+        if src_params.shape[1] > 6:
+            src_params = src_params[:, :6]
+        # -------------------------------------------------------
 
-        # Calculate the predicted xs
-        pred_xs = src_polys[:, 0] / (ys - src_polys[:, 1]) ** 2 + src_polys[:, 2] / (ys - src_polys[:, 1]) + \
-                  src_polys[:, 3] + src_polys[:, 4] * ys - src_polys[:, 5]
+        # 標籤值 (GT): 
+        # 我們從 targets 中提取對應索引的 6 個參數 (不含類別)
+        target_params = torch.cat([tgt[i, 1:] for tgt, (_, i) in zip(targets, indices)], dim=0)
 
-        pred_xs = pred_xs * weights
-        pred_xs = pred_xs.transpose(1, 0)
-        target_xs = target_xs.transpose(1, 0) * weights
-        target_xs = target_xs.transpose(1, 0)
-
-        loss_lowers = F.l1_loss(src_lowers, target_lowers, reduction='none')
-        loss_uppers = F.l1_loss(src_uppers, target_uppers, reduction='none')
-        loss_polys  = F.l1_loss(pred_xs[valid_xs], target_xs[valid_xs], reduction='none')
+        # 直接計算 L1 Loss (預測參數 vs 標籤參數)
+        # 這樣就不需要算那個會導致爆炸的 1/(y-f)^2 了
+        loss_all = F.l1_loss(src_params, target_params, reduction='none')
 
         losses = {}
-        losses['loss_lowers']  = loss_lowers.sum() / num_curves
-        losses['loss_uppers']  = loss_uppers.sum() / num_curves
-        losses['loss_curves']   = loss_polys.sum() / num_curves
+        # 分別記錄以利 Debug (索引 0:lower, 1:upper, 2~5:abcd)
+        losses['loss_lowers'] = loss_all[:, 0].sum() / num_curves
+        losses['loss_uppers'] = loss_all[:, 1].sum() / num_curves
+        losses['loss_curves'] = loss_all[:, 2:].sum() / num_curves
 
         return losses
 
