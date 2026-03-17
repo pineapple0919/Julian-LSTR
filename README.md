@@ -2,31 +2,38 @@
 
 本專案基於 **LSTR** 進行改良，導入了 **FasterNet** 輕量化骨幹、**Stable Diffusion** 資料增強（SPDA）以及運算管線（Pipeline）優化，旨在提升台灣複雜道路環境下的偵測精度與硬體運算效率。
 
-## 📂 專案目錄結構
+## 2) 程式碼結構（重要檔案）
 
-```Plaintext
+在使用前請確保已安裝相關環境並啟用：
+```text
 .
-├── cache/              # 訓練快照 (.pkl) 與資料集快取檔案
-├── config/             # 系統與資料庫配置檔 (JSON)
-│   └── LSTR.json       # 核心參數設定（如權重、層數、學習率）
-├── db/                 # 資料集加載與標籤處理邏輯
-│   ├── datasets.py     # 資料集註冊入口
-│   ├── detection.py    # 基礎偵測類別
-│   └── tusimple.py     # TuSimple 資料集專用處理（含標記轉參數邏輯）
-├── models/             # 神經網路架構定義
-│   ├── LSTR.py         # 模型實例化入口與參數初始化
-│   └── py_utils/       # 核心組件
-│       ├── kp.py       # 主架構定義（含 Backbone 與 Transformer 交互）
-│       ├── fasternet.py# (新增) 改良型輕量化 PConv 骨幹網路
-│       └── transformer.py# Transformer 編解碼器實作
-├── sample/             # 訓練採樣與資料增強
-│   └── tusimple.py     # 訓練時的動態採樣與標籤預處理
-├── images/             # 放置自定義測試影像
-├── detections/         # 自定義影像的偵測結果輸出
-├── results/            # 訓練過程中的可視化除錯圖
-├── train.py            # 訓練啟動腳本
-└── test.py             # 測試、評估與推論腳本
-
+├── config.py                    # 全域預設設定類別（system_configs）
+├── config/
+│   ├── LSTR.json                # TuSimple 設定
+│   └── LSTR_CULANE.json         # CULane 設定
+├── train.py                     # 訓練主程式
+├── test.py                      # 測試與推論主程式
+├── evaluate.py / eva.py / eva2.py  # 評估相關腳本
+├── nnet/
+│   └── py_factory.py            # NetworkFactory: 組模型、loss、optimizer
+├── models/
+│   ├── LSTR.py                  # LSTR 模型入口（model/loss）
+│   ├── LSTR_CULANE.py           # CULane 版本模型入口
+│   ├── FasterNet.py             # 骨幹/模組實作（另有 py_utils/FasterNet.py）
+│   └── py_utils/                # Transformer、matcher、loss、parallel 等核心元件
+├── db/
+│   ├── datasets.py              # 資料集名稱到類別映射
+│   ├── tusimple.py              # TuSimple 讀取與標註轉換
+│   ├── culane.py                # CULane 讀取與標註轉換
+│   └── utils/                   # metric/evaluator/可視化工具
+├── sample/
+│   ├── tusimple.py              # TuSimple 訓練取樣邏輯
+│   └── culane.py                # CULane 訓練取樣邏輯
+├── test/
+│   ├── tusimple.py              # TuSimple 測試流程
+│   ├── culane.py                # CULane 測試流程
+│   └── images.py                # 單張/資料夾影像推論
+└── lane_evaluation/             # C++ + Python 的 lane 評估工具
 ```
 
 ---
@@ -69,7 +76,7 @@ python train.py LSTR
 ```bash
 # 跑數據 (指定 iteration 與配置文件)
 python test.py LSTR --testiter 200000 --split testing --modality eval cfg_file: ./config/LSTR.json
-
+python test.py LSTR --testiter 500000 --split testing --modality eval cfg_file: ./config/LSTR.json
 ```
 
 ### 2. 可視化測試結果

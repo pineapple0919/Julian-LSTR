@@ -248,21 +248,23 @@ class TUSIMPLE(DETECTION):
         return matches, accs, dist
 
     def pred2lanes(self, path, pred, y_samples):
-        ys = np.array(y_samples) / self.img_h
+        # 這裡的 ys 必須是歸一化的，公式才成立
+        ys_norm = np.array(y_samples) / self.img_h 
         lanes = []
         for lane in pred:
-            if lane[0] == 0:
+            if lane[0] == 0: # 信心值過濾
                 continue
-            lanecurve = lane[3:]
-            # 修改後的三次多項式公式：x = a*y^3 + b*y^2 + c*y + d
-            # 注意：lanecurve[0] 是 a, [1] 是 b, [2] 是 c, [3] 是 d
-            lane_pred = (lanecurve[0] * ys**3 
-                        + lanecurve[1] * ys**2 
-                        + lanecurve[2] * ys 
-                        + lanecurve[3]) * self.img_w
-            lane_pred[(ys < lane[1]) | (ys > lane[2])] = -2
-            lanes.append(list(lane_pred))
+            
+            # 假設 lane 是 [score, lower, upper, a, b, c, d]
+            # 所以 lane[3:] = [a, b, c, d]
+            a, b, c, d = lane[3], lane[4], lane[5], lane[6]
+            lower, upper = lane[1], lane[2]
 
+            lane_pred = (a * ys_norm**3 + b * ys_norm**2 + c * ys_norm + d) * self.img_w
+            
+            # 範圍外設定為 -2
+            lane_pred[(ys_norm < lower) | (ys_norm > upper)] = -2
+            lanes.append(list(lane_pred))
         return lanes
 
     def __getitem__(self, idx, transform=False):
@@ -317,20 +319,22 @@ class TUSIMPLE(DETECTION):
 
         img_h, img_w, _ = img.shape
 
-        # Draw label
+        # Draw label (Ground Truth)
         for i, lane in enumerate(label):
             if lane[0] == 0:  # Skip invalid lanes
                 continue
-            lane = lane[3:]  # remove conf, upper and lower positions
-            xs = lane[:len(lane) // 2]
-            ys = lane[len(lane) // 2:]
-            ys = ys[xs >= 0]
-            xs = xs[xs >= 0]
-
-            # draw GT points
-            for p in zip(xs, ys):
-                p = (int(p[0] * img_w), int(p[1] * img_h))
-                img = cv2.circle(img, p, 5, color=GT_COLOR[i], thickness=-1)
+            
+            # 取得 GT 的參數
+            lower, upper = lane[1], lane[2]
+            a, b, c, d = lane[3], lane[4], lane[5], lane[6]
+            
+            # 使用跟預測一樣的邏輯畫出 GT 線條
+            ys_gt = np.linspace(lower, upper, num=50)
+            xs_gt = a * (ys_gt**3) + b * (ys_gt**2) + c * ys_gt + d
+            
+            for px, py in zip(xs_gt, ys_gt):
+                p = (int(px * img_w), int(py * img_h))
+                cv2.circle(img, p, 3, color=GT_COLOR[i % len(GT_COLOR)], thickness=-1)
 
             # # draw GT lane ID
             # cv2.putText(img,
