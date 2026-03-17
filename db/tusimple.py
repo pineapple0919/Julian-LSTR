@@ -186,28 +186,23 @@ class TUSIMPLE(DETECTION):
         categories = anno['categories'] if 'categories' in anno else [1] * len(old_lanes)
         old_lanes = zip(old_lanes, categories)
         old_lanes = filter(lambda x: len(x[0]) > 0, old_lanes)
-        # 1 (類別) + 2 (上下邊界) + 4 (a, b, c, d 四個係數) = 7
-        lanes = np.ones((self.max_lanes, 7), dtype=np.float32) * -1e5
+        
+        # 恢復為原始長度：1 (類別) + 2 (上下邊界) + 2 * max_points (存放 xs 和 ys 的真實點)
+        lanes = np.ones((self.max_lanes, 1 + 2 + 2 * self.max_points), dtype=np.float32) * -1e5
         lanes[:, 0] = 0
         old_lanes = sorted(old_lanes, key=lambda x: x[0][0][0])
         for lane_pos, (lane, category) in enumerate(old_lanes):
             lower, upper = lane[0][1], lane[-1][1]
             xs = np.array([p[0] for p in lane]) / img_w
             ys = np.array([p[1] for p in lane]) / img_h
-            
-            # --- 新增擬合邏輯 ---
-            # 使用三次多項式擬合：x = a*y^3 + b*y^2 + c*y + d
-            # np.polyfit(自變數, 因變數, 次數)，會回傳 [a, b, c, d]
-            coeffs = np.polyfit(ys, xs, 3) 
-            # 強制將係數限制在合理範圍（例如 -2 到 2），這對穩定 Transformer 非常重要
-            coeffs = np.clip(coeffs, -2.0, 2.0)
-            
+
             lanes[lane_pos, 0] = category
             lanes[lane_pos, 1] = lower / img_h
             lanes[lane_pos, 2] = upper / img_h
             
-            # 將 4 個係數存入第 3 到第 6 個索引位置
-            lanes[lane_pos, 3:7] = coeffs
+            # 關鍵：直接把所有的 x 座標和 y 座標塞進矩陣的後半段
+            lanes[lane_pos, 3:3 + len(xs)] = xs
+            lanes[lane_pos, (3 + self.max_points):(3 + self.max_points + len(ys))] = ys
 
         new_anno = {
             'path': anno['path'],
@@ -248,23 +243,21 @@ class TUSIMPLE(DETECTION):
         return matches, accs, dist
 
     def pred2lanes(self, path, pred, y_samples):
-        # 這裡的 ys 必須是歸一化的，公式才成立
-        ys_norm = np.array(y_samples) / self.img_h 
+        ys = np.array(y_samples) / self.img_h
         lanes = []
         for lane in pred:
-            if lane[0] == 0: # 信心值過濾
+            # 【關鍵修正】：不能用 == 0，改用 < 0.5
+            if lane[0] == 0:
                 continue
-            
-            # 假設 lane 是 [score, lower, upper, a, b, c, d]
-            # 所以 lane[3:] = [a, b, c, d]
-            a, b, c, d = lane[3], lane[4], lane[5], lane[6]
-            lower, upper = lane[1], lane[2]
 
-            lane_pred = (a * ys_norm**3 + b * ys_norm**2 + c * ys_norm + d) * self.img_w
-            
-            # 範圍外設定為 -2
-            lane_pred[(ys_norm < lower) | (ys_norm > upper)] = -2
+            lanecurve = lane[3:]
+            lane_pred = (lanecurve[0] * ys**3 
+                        + lanecurve[1] * ys**2 
+                        + lanecurve[2] * ys 
+                        + lanecurve[3]) * self.img_w
+            lane_pred[(ys < lane[1]) | (ys > lane[2])] = -2
             lanes.append(list(lane_pred))
+
         return lanes
 
     def __getitem__(self, idx, transform=False):
@@ -324,25 +317,19 @@ class TUSIMPLE(DETECTION):
             if lane[0] == 0:  # Skip invalid lanes
                 continue
             
-            # 取得 GT 的參數
-            lower, upper = lane[1], lane[2]
-            a, b, c, d = lane[3], lane[4], lane[5], lane[6]
+            # 取得陣列中的原始點座標
+            lane_pts = lane[3:]  # 移除 conf, upper, lower
+            xs = lane_pts[:len(lane_pts) // 2]
+            ys = lane_pts[len(lane_pts) // 2:]
             
-            # 使用跟預測一樣的邏輯畫出 GT 線條
-            ys_gt = np.linspace(lower, upper, num=50)
-            xs_gt = a * (ys_gt**3) + b * (ys_gt**2) + c * ys_gt + d
-            
-            for px, py in zip(xs_gt, ys_gt):
-                p = (int(px * img_w), int(py * img_h))
-                cv2.circle(img, p, 3, color=GT_COLOR[i % len(GT_COLOR)], thickness=-1)
+            # 過濾掉無效的 -1e5 填充值
+            ys = ys[xs >= 0]
+            xs = xs[xs >= 0]
 
-            # # draw GT lane ID
-            # cv2.putText(img,
-            #             str(i), (int(xs[0] * img_w), int(ys[0] * img_h)),
-            #             fontFace=cv2.FONT_HERSHEY_SIMPLEX,
-            #             fontScale=1,
-            #             color=GT_COLOR[i],
-            #             thickness=3)
+            # 畫出 GT 點
+            for p in zip(xs, ys):
+                pt = (int(p[0] * img_w), int(p[1] * img_h))
+                img = cv2.circle(img, pt, 5, color=GT_COLOR[i % len(GT_COLOR)], thickness=-1)
 
         if pred is None:
             return img

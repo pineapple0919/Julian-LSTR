@@ -220,21 +220,33 @@ class kp(nn.Module):
         images = xs[0]
         masks  = xs[1]
 
-        # FasterNet 特徵提取
         features = self.backbone(images)
         p = features[-1]
 
         pmasks = F.interpolate(masks[:, 0, :, :][None], size=p.shape[-2:]).to(torch.bool)[0]
         pos    = self.position_embedding(p, pmasks)
         
-        # Transformer 運算
         hs, _, weights  = self.transformer(self.input_proj(p), pmasks, self.query_embed.weight, pos)
         
         # 輸出層
         output_class    = self.class_embed(hs)
-        output_specific = self.specific_embed(hs) # 這裡直接輸出 6 個參數 [dec, batch, query, 6]
+        output_specific = self.specific_embed(hs) 
 
-        # 這裡直接包裝成輸出字典
+        # ========== 【安全改良版修正區塊】 ==========
+        # 1. lower, upper (Index 0, 1): 必須嚴格限制在 0~1 之間，代表畫面的垂直比例
+        out_lower_upper = output_specific[..., :2].sigmoid()
+        
+        # 2. a, b, c, d (Index 2, 3, 4, 5): 
+        # 由於你的 Ground Truth 在 db/tusimple.py 被 clip 在 [-2.0, 2.0]
+        # 我們使用 2.0 * tanh() 把輸出限制在 [-2.0, 2.0]
+        # 這樣既能表達正負號，又能防止訓練初期數值爆炸導致模型崩潰
+        out_abcd = output_specific[..., 2:]
+        out_abcd = 2.0 * torch.tanh(out_abcd) 
+        
+        # 3. 重新拼接回 6 個參數
+        output_specific = torch.cat([out_lower_upper, out_abcd], dim=-1)
+        # ==========================================
+
         out = {'pred_logits': output_class[-1], 'pred_curves': output_specific[-1]}
         
         if self.aux_loss:

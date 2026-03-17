@@ -46,22 +46,27 @@ class PostProcess(nn.Module):
     @torch.no_grad()
     def forward(self, outputs, target_sizes):
         out_logits, out_curves = outputs['pred_logits'], outputs['pred_curves']
-        # 這裡只取 batch 的第一張圖進行示範，若 batch > 1 需處理索引
-        out_logits = out_logits[0].unsqueeze(0)
-        out_curves = out_curves[0].unsqueeze(0)
+        # 拔掉 batch 維度處理
+        out_logits = out_logits[0]
+        out_curves = out_curves[0]
         
         prob = F.softmax(out_logits, -1)
         scores, labels = prob.max(-1)
         
-        # 假設背景類別是最後一個，類別 1 是車道線
-        # 如果你訓練時類別設為 1 (即 binary)，則 labels == 0 可能是線
-        # 請根據你 detr_loss.py 的 eos_coef 設定確認
-        idx = (labels != out_logits.shape[-1] - 1) 
+        # 【關鍵修正】：加上信心值門檻，並確實過濾 tensor
+        idx = (labels != out_logits.shape[-1] - 1) & (scores > 0.4) 
         
-        # 這裡的 results 會是 [1, num_queries, 1 + lsp_dim]
-        # 也就是 [置信度, lower, upper, a, b, c, d]
+        # 套用過濾器，只留下真正的車道線
+        scores = scores[idx]
+        out_curves = out_curves[idx]
+        
+        # 若都沒有預測出線，回傳符合格式的空張量
+        if scores.shape[0] == 0:
+            empty_res = torch.zeros((0, 1 + out_curves.shape[-1]), device=out_logits.device)
+            return empty_res.unsqueeze(0)
+            
         results = torch.cat([scores.unsqueeze(-1), out_curves], dim=-1)
-        return results
+        return results.unsqueeze(0) # 補回 batch 維度 [1, N, 7]
 
 def kp_detection(db, nnet, result_dir, debug=False, evaluator=None, repeat=1,
                  isEncAttn=False, isDecAttn=False):

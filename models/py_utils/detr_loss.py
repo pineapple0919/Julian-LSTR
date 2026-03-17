@@ -67,33 +67,58 @@ class SetCriterion(nn.Module):
         return losses
 
     def loss_curves(self, outputs, targets, indices, num_curves):
+        """ Compute the losses related to the bounding boxes, the L1 regression loss and the GIoU loss
+           targets dicts must contain the key "boxes" containing a tensor of dim [nb_target_boxes, 4]
+           The target boxes are expected in format (center_x, center_y, w, h), normalized by the image size.
+        """
         assert 'pred_curves' in outputs
         idx = self._get_src_permutation_idx(indices)
         
-        # 預測值: [batch * matched_queries, 6]
-        # 包含 [lower, upper, a, b, c, d]
+        # 1. 取得配對到的預測參數: [matched_queries, 6] (lower, upper, a, b, c, d)
         src_params = outputs['pred_curves'][idx]
+        
+        # 提取 a, b, c, d (增加維度以便後續廣播運算)
+        a = src_params[:, 2:3]  # [matched_queries, 1]
+        b = src_params[:, 3:4]
+        c = src_params[:, 4:5]
+        d = src_params[:, 5:6]
 
-        # --- 新增：強制只取前 6 維，對齊 [lower, upper, a, b, c, d] ---
-        if src_params.shape[1] > 6:
-            src_params = src_params[:, :6]
-        # -------------------------------------------------------
+        # 2. 取得對應的 GT 數據 (此時 targets 存放的是真實點，不是係數了)
+        # 結構為: [class_id, lower, upper, x1...xn, y1...yn]
+        target_lanes = torch.cat([tgt[i] for tgt, (_, i) in zip(targets, indices)], dim=0)
+        
+        # 提取 GT 的 lower, upper
+        target_lowers = target_lanes[:, 1]
+        target_uppers = target_lanes[:, 2]
 
-        # 標籤值 (GT): 
-        # 我們從 targets 中提取對應索引的 6 個參數 (不含類別)
-        target_params = torch.cat([tgt[i, 1:] for tgt, (_, i) in zip(targets, indices)], dim=0)
+        # 提取 GT 的 xs, ys
+        num_points = (target_lanes.shape[1] - 3) // 2
+        target_xs = target_lanes[:, 3:3+num_points] # [matched_queries, num_points]
+        target_ys = target_lanes[:, 3+num_points:]  # [matched_queries, num_points]
 
-        # 直接計算 L1 Loss (預測參數 vs 標籤參數)
-        # 這樣就不需要算那個會導致爆炸的 1/(y-f)^2 了
-        loss_all = F.l1_loss(src_params, target_params, reduction='none')
+        # 3. 計算 Lower / Upper Loss
+        loss_lowers = F.l1_loss(src_params[:, 0], target_lowers, reduction='sum') / num_curves
+        loss_uppers = F.l1_loss(src_params[:, 1], target_uppers, reduction='sum') / num_curves
 
+        # 4. 👑 核心：計算點對點曲線 Loss (Point-to-Point Loss)
+        # 使用預測的 a, b, c, d 和真實的 ys 計算出預測的 xs
+        # pred_xs shape: [matched_queries, num_points]
+        pred_xs = a * (target_ys ** 3) + b * (target_ys ** 2) + c * target_ys + d
+        
+        # 建立有效點的 Mask (排除 -1e5 的填充值)
+        valid_mask = (target_xs >= 0)
+        
+        # 算絕對距離誤差
+        loss_poly = F.l1_loss(pred_xs[valid_mask], target_xs[valid_mask], reduction='sum') / num_curves
+
+        # 打包返回
         losses = {}
-        # 分別記錄以利 Debug (索引 0:lower, 1:upper, 2~5:abcd)
-        losses['loss_lowers'] = loss_all[:, 0].sum() / num_curves
-        losses['loss_uppers'] = loss_all[:, 1].sum() / num_curves
-        losses['loss_curves'] = loss_all[:, 2:].sum() / num_curves
+        losses['loss_lowers'] = loss_lowers
+        losses['loss_uppers'] = loss_uppers
+        losses['loss_curves'] = loss_poly
 
         return losses
+
 
     def _get_src_permutation_idx(self, indices):
         # permute predictions following indices

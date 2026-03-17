@@ -22,46 +22,64 @@ class HungarianMatcher(nn.Module):
     def forward(self, outputs, targets):
         bs, num_queries = outputs["pred_logits"].shape[:2]
         
-        # 展平所有 batch 的預測值
+        # 1. 取得預測值
         out_prob = outputs["pred_logits"].flatten(0, 1).softmax(-1)  # [bs * nq, cls]
-        out_bbox = outputs["pred_curves"].flatten(0, 1)            # [bs * nq, 8 或 6]
+        out_bbox = outputs["pred_curves"].flatten(0, 1)              # [bs * nq, 6] (lower, upper, a, b, c, d)
 
-        # 展平所有 batch 的標籤
-        tgt_ids = torch.cat([v[:, 0] for v in targets]).long()     # [total_gts]
-        tgt_bbox = torch.cat([v[:, 1:] for v in targets])          # [total_gts, 6]
+        # 2. 解析 targets (真實標籤)
+        # 此時的 targets 結構為: [class, lower, upper, x1..xn, y1..yn]
+        tgt_ids = torch.cat([v[:, 0] for v in targets]).long()       # [total_gts]
+        tgt_lower = torch.cat([v[:, 1] for v in targets])            # [total_gts]
+        tgt_upper = torch.cat([v[:, 2] for v in targets])            # [total_gts]
+        
+        # 動態計算點的數量 (扣除前 3 個屬性後，剩下的是 xs 和 ys，各佔一半)
+        num_points = (targets[0].shape[1] - 3) // 2
+        tgt_xs = torch.cat([v[:, 3:3+num_points] for v in targets])  # [total_gts, num_points]
+        tgt_ys = torch.cat([v[:, 3+num_points:] for v in targets])   # [total_gts, num_points]
 
-        # 1. 分類代價
+        # 3. 分類代價
         cost_class = -out_prob[:, tgt_ids]
 
-        # 2. 幾何參數代價 (強制截斷至 6 維以對齊標籤)
-        # 使用廣播計算 L1 距離: [bs*nq, total_gts, 6]
-        diff = torch.abs(out_bbox[:, None, :6] - tgt_bbox[None, :, :6])
-        
-        # 數值保護：防止 Inf 產生導致 linear_sum_assignment 崩潰
-        diff = torch.clamp(diff, min=0, max=10.0)
-        
-        cost_lower = diff[:, :, 0] 
-        cost_upper = diff[:, :, 1] 
-        cost_poly  = diff[:, :, 2:].sum(dim=-1) 
+        # 4. 幾何邊界代價 (lower, upper L1 Distance)
+        cost_lower = torch.abs(out_bbox[:, None, 0] - tgt_lower[None, :]) # [bs*nq, total_gts]
+        cost_upper = torch.abs(out_bbox[:, None, 1] - tgt_upper[None, :]) # [bs*nq, total_gts]
 
-        # 3. 最終代價矩陣 C (修正 self.cost_class)
+        # 5. 曲線點對點代價 (Point-to-Point L1 Distance)
+        # 提取預測的 a, b, c, d 係數，並擴展維度以便進行廣播運算
+        a = out_bbox[:, None, 2:3] # [bs*nq, 1, 1]
+        b = out_bbox[:, None, 3:4]
+        c = out_bbox[:, None, 4:5]
+        d = out_bbox[:, None, 5:6]
+        
+        # 將 GT 的 ys 擴展維度
+        ys = tgt_ys[None, :, :] # [1, total_gts, num_points]
+        
+        # 👑 核心魔法：使用三次多項式算出預測的 X 座標
+        pred_xs = a * (ys ** 3) + b * (ys ** 2) + c * ys + d  # [bs*nq, total_gts, num_points]
+        
+        gt_xs = tgt_xs[None, :, :] # [1, total_gts, num_points]
+        valid_mask = (gt_xs >= 0)  # 過濾掉無效點 (-1e5)
+        
+        # 計算 X 座標的絕對誤差，並只加總有效點
+        diff = torch.abs(pred_xs - gt_xs)
+        cost_poly = (diff * valid_mask).sum(dim=-1) / (valid_mask.sum(dim=-1) + 1e-6) # 平均誤差
+
+        # 6. 最終代價矩陣 C
         C = self.cost_class * cost_class + \
             self.curves_weight * cost_poly + \
             self.lower_weight * cost_lower + \
             self.upper_weight * cost_upper
             
-        # 將矩陣轉回 [batch, queries, total_gts] 以便按 batch 處理
         C = C.view(bs, num_queries, -1).cpu()
 
         sizes = [len(v) for v in targets]
         indices = []
         
-        # 按 batch 拆分並進行匈牙利匹配
         for i, (c, size) in enumerate(zip(C.split(sizes, -1), sizes)):
-            # c[i] 代表取該 batch 對應的 GT 部分
             indices.append(linear_sum_assignment(c[i]))
             
         return [(torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64)) for i, j in indices]
+
 
 def build_matcher(set_cost_class,
                   curves_weight, lower_weight, upper_weight):

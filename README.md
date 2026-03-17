@@ -60,6 +60,7 @@ nvidia-smi
 
 ```bash
 python train.py LSTR
+python train.py LSTR --iter 2500
 
 ```
 
@@ -75,8 +76,8 @@ python train.py LSTR
 
 ```bash
 # 跑數據 (指定 iteration 與配置文件)
-python test.py LSTR --testiter 200000 --split testing --modality eval cfg_file: ./config/LSTR.json
-python test.py LSTR --testiter 500000 --split testing --modality eval cfg_file: ./config/LSTR.json
+python test.py LSTR --testiter 2500 --split testing --modality eval
+python test.py LSTR --testiter 500000 --split testing --modality eval
 ```
 
 ### 2. 可視化測試結果
@@ -85,7 +86,7 @@ python test.py LSTR --testiter 500000 --split testing --modality eval cfg_file: 
 
 ```bash
 # 基本可視化
-python test.py LSTR --testiter 200000 --split testing --modality eval
+python test.py LSTR --testiter 5000 --split testing --modality eval
 
 # 儲存偵測結果圖至 ./results/LSTR/500000/testing/lane_debug
 python test.py LSTR --testiter 500000 --modality eval --split testing --debug
