@@ -9,10 +9,9 @@ from .detr_loss import SetCriterion
 from .matcher import build_matcher
 from .misc import *
 from sample.vis import save_debug_images_boxes
-
-# === [新增] 引入 FasterNet ===
-# 您可以根據需求選擇 fasternet_t0, fasternet_t1, fasternet_s 等
-from .FasterNet import fasternet_t1
+from config import system_configs
+# 修改引入，確保所有版本都有被 import
+from .FasterNet import fasternet_t0, fasternet_t1, fasternet_t2, fasternet_s, fasternet_m, fasternet_l
 BN_MOMENTUM = 0.1
 
 class FrozenBatchNorm2d(torch.nn.Module):
@@ -108,7 +107,7 @@ class kp(nn.Module):
                  flag=False,
                  block=None,
                  layers=None,
-                 res_dims=None,
+                 res_dims=None, # 這些參數留著沒關係，但下面不會用到
                  res_strides=None,
                  attn_dim=None,
                  num_queries=None,
@@ -124,30 +123,63 @@ class kp(nn.Module):
                  lsp_dim=None,
                  mlp_layers=None,
                  num_cls=None,
-                 norm_layer=FrozenBatchNorm2d
+                 norm_layer=FrozenBatchNorm2d,
+                 backbone_type='fasternet_t2'
                  ):
         super(kp, self).__init__()
         self.flag = flag
-        # above all waste not used
         self.norm_layer = norm_layer
+        # === 替換原本的寫死邏輯，改為動態選擇 ===
+        print(f"Initializing Backbone: {backbone_type}")
+        
+        if backbone_type == 'fasternet_t0':
+            self.backbone = fasternet_t0()
+            backbone_out_dim = 320
+        elif backbone_type == 'fasternet_t1':
+            self.backbone = fasternet_t1()
+            backbone_out_dim = 512
+        elif backbone_type == 'fasternet_t2':
+            self.backbone = fasternet_t2()
+            backbone_out_dim = 768
+        elif backbone_type == 'fasternet_s':
+            self.backbone = fasternet_s()
+            backbone_out_dim = 1024
+        elif backbone_type == 'fasternet_m':
+            self.backbone = fasternet_m()
+            backbone_out_dim = 1152
+        elif backbone_type == 'fasternet_l':
+            self.backbone = fasternet_l()
+            backbone_out_dim = 1536
+        else:
+            raise ValueError(f"Unknown backbone type: {backbone_type}")
+        # ========================================
+        # self.inplanes = res_dims[0]
+        # self.conv1 = nn.Conv2d(3, self.inplanes, kernel_size=7, stride=2, padding=3,
+        #                        bias=False)
+        # self.bn1 = self.norm_layer(self.inplanes)
+        # self.relu = nn.ReLU(inplace=True)
+        # self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
 
-        self.inplanes = res_dims[0]
-        self.conv1 = nn.Conv2d(3, self.inplanes, kernel_size=7, stride=2, padding=3,
-                               bias=False)
-        self.bn1 = self.norm_layer(self.inplanes)
-        self.relu = nn.ReLU(inplace=True)
-        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        # self.layer1 = self._make_layer(block, res_dims[0], layers[0], stride=res_strides[0])
+        # self.layer2 = self._make_layer(block, res_dims[1], layers[1], stride=res_strides[1])
+        # self.layer3 = self._make_layer(block, res_dims[2], layers[2], stride=res_strides[2])
+        # self.layer4 = self._make_layer(block, res_dims[3], layers[3], stride=res_strides[3])
 
-        self.layer1 = self._make_layer(block, res_dims[0], layers[0], stride=res_strides[0])
-        self.layer2 = self._make_layer(block, res_dims[1], layers[1], stride=res_strides[1])
-        self.layer3 = self._make_layer(block, res_dims[2], layers[2], stride=res_strides[2])
-        self.layer4 = self._make_layer(block, res_dims[3], layers[3], stride=res_strides[3])
+        # hidden_dim = attn_dim
+        # self.aux_loss = aux_loss
+        # self.position_embedding = build_position_encoding(hidden_dim=hidden_dim, type=pos_type)
+        # self.query_embed = nn.Embedding(num_queries, hidden_dim)
+        # self.input_proj = nn.Conv2d(res_dims[-1], hidden_dim, kernel_size=1)  # the same as channel of self.layer4
 
-        hidden_dim = attn_dim
+
+        hidden_dim = attn_dim 
         self.aux_loss = aux_loss
         self.position_embedding = build_position_encoding(hidden_dim=hidden_dim, type=pos_type)
         self.query_embed = nn.Embedding(num_queries, hidden_dim)
-        self.input_proj = nn.Conv2d(res_dims[-1], hidden_dim, kernel_size=1)  # the same as channel of self.layer4
+        
+        # 修改 input_proj
+        self.input_proj = nn.Conv2d(backbone_out_dim, hidden_dim, kernel_size=1)
+        
 
         self.transformer = build_transformer(hidden_dim=hidden_dim,
                                              dropout=drop_out,
@@ -158,6 +190,7 @@ class kp(nn.Module):
                                              pre_norm=pre_norm,
                                              return_intermediate_dec=return_intermediate)
 
+        # 注意：你這裡用了 num_cls + 1，如果原本是 num_cls，請確認這是否為你刻意修改
         self.class_embed    = nn.Linear(hidden_dim, num_cls + 1)
         self.specific_embed = MLP(hidden_dim, hidden_dim, lsp_dim - 4, mlp_layers)
         self.shared_embed   = MLP(hidden_dim, hidden_dim, 4, mlp_layers)
@@ -178,28 +211,31 @@ class kp(nn.Module):
         return nn.Sequential(*layers)
 
     def _train(self, *xs, **kwargs):
+        # images = xs[0]  # B 3 360 640
+        # masks  = xs[1]  # B 1 360 640
+
+        # p = self.conv1(images)  # B 16 180 320
+        # p = self.bn1(p)  # B 16 180 320
+        # p = self.relu(p)  # B 16 180 320
+        # p = self.maxpool(p)  # B 16 90 160
+        # p = self.layer1(p)  # B 16 90 160
+        # p = self.layer2(p)  # B 32 45 80
+        # p = self.layer3(p)  # B 64 23 40
+        # p = self.layer4(p)  # B 128 12 20
+        # pmasks = F.interpolate(masks[:, 0, :, :][None], size=p.shape[-2:]).to(torch.bool)[0]
+
         images = xs[0]  # B 3 360 640
         masks  = xs[1]  # B 1 360 640
 
-        # === [修改] 使用 FasterNet 提取特徵 ===
-        # FasterNet forward 會回傳一個 list: [stage0, stage1, stage2, stage3]
-        features = self.backbone(images)
-        
-        # 我們通常使用最後一層 (stride 32) 的特徵作為 Transformer 的輸入
-        p = features[-1] 
-        
-        # 原本的 ResNet 流程 (已不需要)
-        # p = self.conv1(images)
-        # p = self.bn1(p)
-        # ...
-        # p = self.layer4(p)
-        # ====================================
+        # === 替換開始: 使用 FasterNet 提取特徵 ===
+        features = self.backbone(images) # FasterNet 回傳一個列表 list
+        p = features[-1]                 # 取出最後一層特徵 (Stride 32)
+        # === 替換結束 ===
 
-        # 以下邏輯保持不變
         pmasks = F.interpolate(masks[:, 0, :, :][None], size=p.shape[-2:]).to(torch.bool)[0]
+        # ... 以下程式碼保持不變 ...
         pos    = self.position_embedding(p, pmasks)
         hs, _, weights  = self.transformer(self.input_proj(p), pmasks, self.query_embed.weight, pos)
-        
         output_class    = self.class_embed(hs)
         output_specific = self.specific_embed(hs)
         output_shared   = self.shared_embed(hs)
@@ -210,7 +246,6 @@ class kp(nn.Module):
         if self.aux_loss:
             out['aux_outputs'] = self._set_aux_loss(output_class, output_specific)
         return out, weights
-
 
     def _test(self, *xs, **kwargs):
         return self._train(*xs, **kwargs)
@@ -230,76 +265,31 @@ class kp(nn.Module):
 
 class AELoss(nn.Module):
     def __init__(self,
-                 flag=False,
-                 block=None,
-                 layers=None,
-                 res_dims=None,
-                 res_strides=None,
-                 attn_dim=None,
-                 num_queries=None,
+                 debug_path=None,
                  aux_loss=None,
-                 pos_type=None,
-                 drop_out=0.1,
-                 num_heads=None,
-                 dim_feedforward=None,
-                 enc_layers=None,
-                 dec_layers=None,
-                 pre_norm=None,
-                 return_intermediate=None,
-                 lsp_dim=None,
-                 mlp_layers=None,
-                 num_cls=None,
-                 norm_layer=FrozenBatchNorm2d
+                 num_classes=None,
+                 dec_layers=None
                  ):
-        super(kp, self).__init__()
-        self.flag = flag
-        self.norm_layer = norm_layer
+        super(AELoss, self).__init__()
+        self.debug_path  = debug_path
+        weight_dict = {'loss_ce': 3, 'loss_curves': 5, 'loss_lowers': 2, 'loss_uppers': 2}
+        # cardinality is not used to propagate loss
+        matcher = build_matcher(set_cost_class=weight_dict['loss_ce'],
+                                curves_weight=weight_dict['loss_curves'],
+                                lower_weight=weight_dict['loss_lowers'],
+                                upper_weight=weight_dict['loss_uppers'])
+        losses  = ['labels', 'curves', 'cardinality']
 
-        # === [修改] 替換 Backbone 為 FasterNet ===
-        # 初始化 FasterNet (這裡以 t1 為例，您也可以改用 t0 或 s)
-        self.backbone = fasternet_t1()
-        
-        # FasterNet 的最後一層特徵維度 (num_features)
-        # 用於讓 Transformer 的 input_proj 對齊維度
-        backbone_output_dim = self.backbone.num_features
-
-        # 註解掉或刪除原本 ResNet 的定義
-        # self.inplanes = res_dims[0]
-        # self.conv1 = ...
-        # self.bn1 = ...
-        # self.relu = ...
-        # self.maxpool = ...
-        # self.layer1 = ...
-        # self.layer2 = ...
-        # self.layer3 = ...
-        # self.layer4 = ...
-        # ==========================================
-
-        hidden_dim = attn_dim
-        self.aux_loss = aux_loss
-        self.position_embedding = build_position_encoding(hidden_dim=hidden_dim, type=pos_type)
-        self.query_embed = nn.Embedding(num_queries, hidden_dim)
-
-        # === [修改] input_proj 的輸入維度 ===
-        # 原本是 res_dims[-1]，現在改為 backbone_output_dim
-        self.input_proj = nn.Conv2d(backbone_output_dim, hidden_dim, kernel_size=1) 
-
-        self.transformer = build_transformer(hidden_dim=hidden_dim,
-                                             dropout=drop_out,
-                                             nheads=num_heads,
-                                             dim_feedforward=dim_feedforward,
-                                             enc_layers=enc_layers,
-                                             dec_layers=dec_layers,
-                                             pre_norm=pre_norm,
-                                             return_intermediate_dec=return_intermediate)
-
-        self.class_embed    = nn.Linear(hidden_dim, num_cls)
-        self.specific_embed = MLP(hidden_dim, hidden_dim, lsp_dim - 4, mlp_layers)
-        self.shared_embed   = MLP(hidden_dim, hidden_dim, 4, mlp_layers)
-        
-        # _make_layer 方法現在用不到了，可以保留不動或刪除
-
-
+        if aux_loss:
+            aux_weight_dict = {}
+            for i in range(dec_layers - 1):
+                aux_weight_dict.update({k + f'_{i}': v for k, v in weight_dict.items()})
+            weight_dict.update(aux_weight_dict)
+        self.criterion = SetCriterion(num_classes=num_classes,
+                                      matcher=matcher,
+                                      weight_dict=weight_dict,
+                                      eos_coef=1.0,
+                                      losses=losses)
 
     def forward(self,
                 iteration,
