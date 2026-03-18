@@ -238,7 +238,7 @@ class TUSIMPLE(DETECTION):
         return matches, accs, dist
 
     def pred2lanes(self, path, pred, y_samples):
-        ys = np.array(y_samples) / self.img_h
+        ys = (np.array(y_samples) / self.img_h - 0.5) * 2.0
         lanes = []
         for lane in pred:
             if lane[0] == 0:
@@ -351,10 +351,15 @@ class TUSIMPLE(DETECTION):
 
             # generate points from the polynomial
             ys = np.linspace(lower, upper, num=100)
+
+            # --- 新增 Scaling 邏輯 ---
+            ys_scaled = (ys - 0.5) * 2.0
+            # -----------------------
+
             points = np.zeros((len(ys), 2), dtype=np.int32)
             points[:, 1] = (ys * img_h).astype(int)
-            points[:, 0] = ((lane[0] / (ys - lane[1]) ** 2 + lane[2] / (ys - lane[1]) + lane[3] + lane[4] * ys -
-                             lane[5]) * img_w).astype(int)
+            points[:, 0] = ((lane[0] / (ys_scaled - lane[1]) ** 2 + lane[2] / (ys_scaled - lane[1]) + lane[3] + lane[4] * ys_scaled -
+                 lane[5]) * img_w).astype(int)
             points = points[(points[:, 0] > 0) & (points[:, 0] < img_w)]
 
             # draw lane with a polyline on the overlay

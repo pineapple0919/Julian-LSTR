@@ -4,9 +4,7 @@ TuSimple/
 
 # --- 訓練與快取 (Cache) ---
 # 包含訓練中產生的 .pkl 模型權重檔與資料快取
-cache/
-*.pkl
-*.pth
+
 
 # --- 運算結果與除錯影像 (Results) ---
 # 訓練與測試過程中產生的視覺化結果 (例如 lane_debug 目錄)

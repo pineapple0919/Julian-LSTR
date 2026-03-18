@@ -60,14 +60,23 @@ class HungarianMatcher(nn.Module):
         weights = weights / torch.max(weights)
 
         tgt_ys = tgt_points[:, tgt_points.shape[1] // 2:]
+        # --- 新增 Scaling 邏輯 ---
+        tgt_ys = (tgt_ys - 0.5) * 2.0
+        # -----------------------
         out_polys = out_bbox[:, :, 2:].view((-1, 6))
         tgt_ys = tgt_ys.repeat(out_polys.shape[0], 1, 1)
         tgt_ys = tgt_ys.transpose(0, 2)
         tgt_ys = tgt_ys.transpose(0, 1)
 
         # Calculate the predicted xs
-        out_xs = out_polys[:, 0] / (tgt_ys - out_polys[:, 1]) ** 2 + out_polys[:, 2] / (tgt_ys - out_polys[:, 1]) + \
-                 out_polys[:, 3] + out_polys[:, 4] * tgt_ys - out_polys[:, 5]
+        eps = 1e-4
+        denom = tgt_ys - out_polys[:, 1]
+        denom = torch.sign(denom) * torch.clamp(torch.abs(denom), min=eps)
+
+        # 計算預測的 xs
+        out_xs = out_polys[:, 0] / (denom ** 2) + out_polys[:, 2] / denom + \
+                out_polys[:, 3] + out_polys[:, 4] * tgt_ys - out_polys[:, 5]
+        # ------------------
         tgt_xs = tgt_xs.repeat(out_polys.shape[0], 1, 1)
         tgt_xs = tgt_xs.transpose(0, 2)
         tgt_xs = tgt_xs.transpose(0, 1)

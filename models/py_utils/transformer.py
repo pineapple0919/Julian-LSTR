@@ -43,26 +43,28 @@ class Transformer(nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def forward(self, src, mask, query_embed, pos_embed):
+    def forward(self, src, mask, query_embed, pos_embed, attn_mask=None): # 1. 新增 attn_mask 參數
         # flatten NxCxHxW to HWxNxC
         bs, c, h, w = src.shape
         src = src.flatten(2).permute(2, 0, 1)
-
         pos_embed = pos_embed.flatten(2).permute(2, 0, 1)
 
-        query_embed = query_embed.unsqueeze(1).repeat(1, bs, 1)
+        # 2. 核心修正：判斷 query_embed 是否已經由 kp.py 進行了拼接處理
+        # 如果是 2 維 [Q, C]，則進行 repeat；如果是 3 維 [Q, B, C] (DN-DETR 拼接後)，則直接使用
+        if query_embed.ndim == 2:
+            query_embed = query_embed.unsqueeze(1).repeat(1, bs, 1)
 
         mask = mask.flatten(1)
-
         tgt = torch.zeros_like(query_embed)
 
         memory, weights = self.encoder(src, src_key_padding_mask=mask, pos=pos_embed)
 
+        # 3. 將 attn_mask 傳給 decoder (原本沒傳)
         hs = self.decoder(tgt, memory, memory_key_padding_mask=mask,
-                          pos=pos_embed, query_pos=query_embed)
+                        pos=pos_embed, query_pos=query_embed,
+                        tgt_mask=attn_mask) # 傳入關鍵的 Mask
 
         return hs.transpose(1, 2), memory.permute(1, 2, 0).view(bs, c, h, w), weights
-
 
 class TransformerEncoder(nn.Module):
 

@@ -195,6 +195,10 @@ class kp(nn.Module):
         self.specific_embed = MLP(hidden_dim, hidden_dim, lsp_dim - 4, mlp_layers)
         self.shared_embed   = MLP(hidden_dim, hidden_dim, 4, mlp_layers)
 
+        # === 新增：DN-DETR 投影層 ===
+        self.num_queries = num_queries # 確保 _train 可以讀到
+        self.dn_input_proj = nn.Linear(8, hidden_dim) # 假設參數是 [k, f, m, n, b, b', lower, upper]
+
     def _make_layer(self, block, planes, blocks, stride=1):
         downsample = None
         if stride != 1 or self.inplanes != planes * block.expansion:
@@ -209,40 +213,92 @@ class kp(nn.Module):
         for i in range(1, blocks):
             layers.append(block(self.inplanes, planes))
         return nn.Sequential(*layers)
+    
+    def prepare_lanes_dn(self, targets, bs, device):
+        if targets is None or not self.training:
+            return None, None, 0
+
+        num_dn_groups = 5
+        noise_scale = 0.05 # 建議初期設小一點，比較容易收斂
+        
+        # 1. 將 list of tensors 轉為統一維度 [B, Max_Lanes, 8]
+        # LSTR 的 targets 通常是 list，每張圖車道數不同，這裡取最大值或固定值
+        max_lanes = max([t.shape[0] for t in targets])
+        gt_lanes = torch.zeros((bs, max_lanes, 8), device=device)
+        for i, t in enumerate(targets):
+            gt_lanes[i, :t.shape[0], :] = t[:, :8] # 取前 8 維幾何參數
+
+        # 2. 複製 GT 並加噪
+        dn_lanes = gt_lanes.repeat(1, num_dn_groups, 1)
+        # 只對幾何項加噪，不對 lower/upper 加太大的噪
+        noise = (torch.rand_like(dn_lanes) - 0.5) * noise_scale
+        noisy_lanes = dn_lanes + noise
+        
+        # 3. 投影
+        dn_embed = self.dn_input_proj(noisy_lanes) # [B, Num_DN, Hidden]
+        dn_embed = dn_embed.permute(1, 0, 2) # 轉為 [Num_DN, B, Hidden] 以配合 Transformer
+        
+        # 4. 構造 Attention Mask (這部分最重要)
+        num_dn = dn_embed.shape[0]
+        total_queries = self.num_queries + num_dn
+        # Mask 預設為 0 (可見)，-inf (不可見)
+        attn_mask = torch.zeros((total_queries, total_queries), device=device)
+        # 核心作弊防禦：Learnable Queries (前 0:num_queries) 不准看 DN Queries (後面)
+        attn_mask[:self.num_queries, self.num_queries:] = float('-inf')
+        # 同組 DN 之間可以互相看，但不同組之間通常也建議隔離 (進階做法)，這裡先做基本隔離
+        
+        return dn_embed, attn_mask, num_dn
 
     def _train(self, *xs, **kwargs):
-        # images = xs[0]  # B 3 360 640
-        # masks  = xs[1]  # B 1 360 640
+        images = xs[0] 
+        masks  = xs[1]
+        targets = kwargs.get('targets') # 取得標籤
 
-        # p = self.conv1(images)  # B 16 180 320
-        # p = self.bn1(p)  # B 16 180 320
-        # p = self.relu(p)  # B 16 180 320
-        # p = self.maxpool(p)  # B 16 90 160
-        # p = self.layer1(p)  # B 16 90 160
-        # p = self.layer2(p)  # B 32 45 80
-        # p = self.layer3(p)  # B 64 23 40
-        # p = self.layer4(p)  # B 128 12 20
-        # pmasks = F.interpolate(masks[:, 0, :, :][None], size=p.shape[-2:]).to(torch.bool)[0]
-
-        images = xs[0]  # B 3 360 640
-        masks  = xs[1]  # B 1 360 640
-
-        # === 替換開始: 使用 FasterNet 提取特徵 ===
-        features = self.backbone(images) # FasterNet 回傳一個列表 list
-        p = features[-1]                 # 取出最後一層特徵 (Stride 32)
-        # === 替換結束 ===
+        features = self.backbone(images)
+        p = features[-1]
+        bs = p.shape[0]
+        device = p.device
 
         pmasks = F.interpolate(masks[:, 0, :, :][None], size=p.shape[-2:]).to(torch.bool)[0]
-        # ... 以下程式碼保持不變 ...
-        pos    = self.position_embedding(p, pmasks)
-        hs, _, weights  = self.transformer(self.input_proj(p), pmasks, self.query_embed.weight, pos)
-        output_class    = self.class_embed(hs)
+        pos = self.position_embedding(p, pmasks)
+
+        # === DN-DETR 核心邏輯 ===
+        dn_embed, attn_mask, num_dn = self.prepare_lanes_dn(targets, bs, device)
+        
+        # 取得原本的 Query
+        query_embed = self.query_embed.weight.unsqueeze(1).repeat(1, bs, 1) # [Q, B, C]
+        
+        if dn_embed is not None:
+            # 拼接：[Q + DN, B, C]
+            combined_queries = torch.cat([query_embed, dn_embed], dim=0)
+        else:
+            combined_queries = query_embed
+            attn_mask = None
+
+        # 餵進 Transformer，注意傳入 attn_mask
+        hs, _, weights = self.transformer(self.input_proj(p), pmasks, combined_queries, pos, attn_mask=attn_mask)
+
+        # 分離輸出
+        # hs 原始維度是 [Layers, B, Total_Q, C] (經過 hs.transpose(1,2) 後)
+        # 注意：原本 transformer 回傳後有做 transpose(1,2)，請根據實際輸出調整
+        output_class = self.class_embed(hs)
         output_specific = self.specific_embed(hs)
+
         output_shared   = self.shared_embed(hs)
         output_shared   = torch.mean(output_shared, dim=-2, keepdim=True)
         output_shared   = output_shared.repeat(1, 1, output_specific.shape[2], 1)
         output_specific = torch.cat([output_specific[:, :, :, :2], output_shared, output_specific[:, :, :, 2:]], dim=-1)
-        out = {'pred_logits': output_class[-1], 'pred_curves': output_specific[-1]}
+        out = {
+            'pred_logits': output_class[-1][:, :self.num_queries], # 傳給匈牙利匹配
+            'pred_curves': output_specific[-1][:, :self.num_queries],
+        }
+        # 如果有 DN 部分，另外打包
+        if num_dn > 0:
+            out.update({
+                'dn_logits': output_class[-1][:, self.num_queries:], # 傳給去噪 Loss
+                'dn_curves': output_specific[-1][:, self.num_queries:],
+                'num_dn': num_dn
+            })
         if self.aux_loss:
             out['aux_outputs'] = self._set_aux_loss(output_class, output_specific)
         return out, weights
@@ -344,3 +400,4 @@ class AELoss(nn.Module):
 
         return (losses, loss_dict_reduced, loss_dict_reduced_unscaled,
                 loss_dict_reduced_scaled, loss_value)
+    

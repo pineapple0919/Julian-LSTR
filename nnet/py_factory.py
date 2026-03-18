@@ -7,6 +7,8 @@ from config import system_configs
 from models.py_utils.data_parallel import DataParallel
 import pickle
 import numpy as np
+from .adan import Adan
+
 torch.manual_seed(317)
 
 class Network(nn.Module):
@@ -86,6 +88,18 @@ class NetworkFactory(object):
                 lr=system_configs.learning_rate,
                 weight_decay=1e-4
             )
+
+        # --- 新增 Adan 分支 ---
+        elif system_configs.opt_algo == 'adan':
+            self.optimizer = Adan(
+                filter(lambda p: p.requires_grad, self.model.parameters()),
+                lr=system_configs.learning_rate,
+                weight_decay=0.02, # Adan 通常建議使用稍大的 weight_decay
+                betas=(0.98, 0.92, 0.99), # 這是 Adan 論文建議的預設值
+                eps=1e-8
+            )
+        # ---------------------
+
         else:
             raise ValueError("unknown optimizer")
 
@@ -120,6 +134,9 @@ class NetworkFactory(object):
         loss      = loss.mean()
 
         loss.backward()
+
+        # 在 nnet/py_factory.py 的 self.optimizer.step() 之前加入
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=2.0)
         self.optimizer.step()
 
         return loss, loss_dict

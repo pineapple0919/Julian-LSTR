@@ -82,13 +82,24 @@ class SetCriterion(nn.Module):
 
         target_xs = target_points[:, :target_points.shape[1] // 2]
         ys = target_points[:, target_points.shape[1] // 2:].transpose(1, 0)
+
+        # --- 新增 Scaling 邏輯 ---
+        ys = (ys - 0.5) * 2.0
+        # -----------------------
+
         valid_xs = target_xs >= 0
         weights = (torch.sum(valid_xs, dtype=torch.float32) / torch.sum(valid_xs, dim=1, dtype=torch.float32)) ** 0.5
         weights = weights / torch.max(weights)
 
-        # Calculate the predicted xs
-        pred_xs = src_polys[:, 0] / (ys - src_polys[:, 1]) ** 2 + src_polys[:, 2] / (ys - src_polys[:, 1]) + \
-                  src_polys[:, 3] + src_polys[:, 4] * ys - src_polys[:, 5]
+        # 步驟 2: 加入數值保護項 (防止分母為 0)
+        eps = 1e-4
+        denom = ys - src_polys[:, 1]
+        # 使用 sign 確保正負號正確，並限制最小值不低於 eps
+        denom = torch.sign(denom) * torch.clamp(torch.abs(denom), min=eps)
+
+        # 步驟 3: 使用新的 denom 計算 pred_xs
+        pred_xs = src_polys[:, 0] / (denom ** 2) + src_polys[:, 2] / denom + \
+                src_polys[:, 3] + src_polys[:, 4] * ys - src_polys[:, 5]
 
         pred_xs = pred_xs * weights
         pred_xs = pred_xs.transpose(1, 0)
