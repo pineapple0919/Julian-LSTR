@@ -244,17 +244,25 @@ class TUSIMPLE(DETECTION):
 
     def pred2lanes(self, path, pred, y_samples):
         ys = np.array(y_samples) / self.img_h
+        
+        # 👑 關鍵修正：必須與訓練時的縮放邏輯完全對齊
+        ys_scaled = (ys - 0.5) * 2.0 
+        
         lanes = []
         for lane in pred:
-            # 【關鍵修正】：不能用 == 0，改用 < 0.5
-            if lane[0] == 0:
+            # 建議這裡改用信心值門檻（例如 0.5），避免背景雜訊
+            if lane[0] < 0.02: 
                 continue
 
             lanecurve = lane[3:]
-            lane_pred = (lanecurve[0] * ys**3 
-                        + lanecurve[1] * ys**2 
-                        + lanecurve[2] * ys 
+            
+            # 使用映射後的 ys_scaled 來計算
+            lane_pred = (lanecurve[0] * ys_scaled**3 
+                        + lanecurve[1] * ys_scaled**2 
+                        + lanecurve[2] * ys_scaled 
                         + lanecurve[3]) * self.img_w
+            
+            # 邊界判定（邊界 lane[1], lane[2] 依舊是在 0~1 區間，所以用原始 ys）
             lane_pred[(ys < lane[1]) | (ys > lane[2])] = -2
             lanes.append(list(lane_pred))
 
