@@ -35,6 +35,28 @@ class SetCriterion(nn.Module):
 
         self.register_buffer('empty_weight', empty_weight)
 
+    def get_dn_indices(self, targets, num_dn):
+        """
+        根據 DN-DETR 的構造邏輯，直接產生對應關係。
+        targets: 標籤列表
+        num_dn: DN Queries 的總數 (例如 5 組 * Max_Lanes)
+        """
+        indices = []
+        for tgt in targets:
+            num_gt = tgt.shape[0]
+            if num_gt > 0:
+                # src: DN Query 的索引 (0, 1, 2, ...)
+                # tgt: 對應的 GT 索引 (0, 1, 2, ..., num_gt-1 重複多次)
+                i = torch.arange(num_dn, dtype=torch.int64, device=tgt.device)
+                j = torch.arange(num_gt, dtype=torch.int64, device=tgt.device)
+                j = j.repeat(num_dn // num_gt + 1)[:num_dn] # 確保長度對齊
+                indices.append((i, j))
+            else:
+                # 若該圖無 GT，則 DN 部分不計算 Loss
+                indices.append((torch.empty(0, dtype=torch.int64, device=tgt.device), 
+                                torch.empty(0, dtype=torch.int64, device=tgt.device)))
+        return indices
+
     def loss_labels(self, outputs, targets, indices, num_curves, log=True):
         """Classification loss (NLL)
         targets dicts must contain the key "labels" containing a tensor of dim [nb_target_boxes]
@@ -54,7 +76,7 @@ class SetCriterion(nn.Module):
         return losses
 
     @torch.no_grad()
-    def loss_cardinality(self, outputs, targets, indices, num_curves):
+    def loss_cardinality(self, outputs, targets, indices, num_curves, **kwargs):
         """ Compute the cardinality error, ie the absolute error in the number of predicted non-empty boxes
         This is not really a loss, it is intended for logging purposes only. It doesn't propagate gradients
         """
@@ -66,7 +88,7 @@ class SetCriterion(nn.Module):
         losses = {'cardinality_error': card_err}
         return losses
 
-    def loss_curves(self, outputs, targets, indices, num_curves):
+    def loss_curves(self, outputs, targets, indices, num_curves, **kwargs):
         """Compute the losses related to the bounding boxes, the L1 regression loss and the GIoU loss
            targets dicts must contain the key "boxes" containing a tensor of dim [nb_target_boxes, 4]
            The target boxes are expected in format (center_x, center_y, h, w), normalized by the image size.
@@ -140,43 +162,65 @@ class SetCriterion(nn.Module):
         return loss_map[loss](outputs, targets, indices, num_curves, **kwargs)
 
     def forward(self, outputs, targets):
-        """ This performs the loss computation.
-        Parameters:
-             outputs: dict of tensors, see the output specification of the model for the format
-             targets: list of dicts, such that len(targets) == batch_size.
-                      The expected keys in each dict depends on the losses applied, see each loss' doc
-        """
+        # 1. 取得不含 aux 的輸出
         outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs'}
 
-        # Retrieve the matching between the outputs of the last layer and the targets
-        indices = self.matcher(outputs_without_aux, targets)
+        # === A. Matching 分支 (原本的邏輯) ===
+        # 只取 pred_ 開頭的輸出進行匈牙利匹配
+        matching_outputs = {
+            'pred_logits': outputs['pred_logits'],
+            'pred_curves': outputs['pred_curves']
+        }
+        indices = self.matcher(matching_outputs, targets)
 
-        # Compute the average number of target boxes accross all nodes, for normalization purposes
+        # 計算 Normalization 系數
         num_curves = sum(tgt.shape[0] for tgt in targets)
         num_curves = torch.as_tensor([num_curves], dtype=torch.float, device=next(iter(outputs.values())).device)
         if is_dist_avail_and_initialized():
             torch.distributed.all_reduce(num_curves)
         num_curves = torch.clamp(num_curves / get_world_size(), min=1).item()
 
-        # Compute all the requested losses
+        # 計算 Matching Loss
         losses = {}
         for loss in self.losses:
-            losses.update(self.get_loss(loss, outputs, targets, indices, num_curves))
+            losses.update(self.get_loss(loss, matching_outputs, targets, indices, num_curves))
 
-        # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
+        # === B. DN 分支 (作弊去噪邏輯) ===
+        if 'dn_logits' in outputs:
+            num_dn = outputs['num_dn']
+            dn_outputs = {
+                'pred_logits': outputs['dn_logits'],
+                'pred_curves': outputs['dn_curves']
+            }
+            # 免匹配！直接拿索引
+            dn_indices = self.get_dn_indices(targets, num_dn)
+            
+            # 計算 DN 損失，加上 '_dn' 字尾以便在 Log 中區分
+            for loss in self.losses:
+                if loss == 'cardinality': continue # DN 不需要算這個
+                l_dict = self.get_loss(loss, dn_outputs, targets, dn_indices, num_curves)
+                l_dict = {k + '_dn': v for k, v in l_dict.items()}
+                losses.update(l_dict)
+
+        # === C. 輔助損失 (Aux Loss) 同步處理 ===
         if 'aux_outputs' in outputs:
             for i, aux_outputs in enumerate(outputs['aux_outputs']):
-                indices = self.matcher(aux_outputs, targets)
+                # 輔助層的 Matching 路徑
+                m_aux_outputs = {'pred_logits': aux_outputs['pred_logits'], 'pred_curves': aux_outputs['pred_curves']}
+                indices = self.matcher(m_aux_outputs, targets)
                 for loss in self.losses:
-                    if loss == 'masks':
-                        # Intermediate masks losses are too costly to compute, we ignore them.
-                        continue
-                    kwargs = {}
-                    if loss == 'labels':
-                        # Logging is enabled only for the last layer
-                        kwargs = {'log': False}
-                    l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_curves, **kwargs)
+                    l_dict = self.get_loss(loss, m_aux_outputs, targets, indices, num_curves, log=False)
                     l_dict = {k + f'_{i}': v for k, v in l_dict.items()}
                     losses.update(l_dict)
+                
+                # 輔助層的 DN 路徑 (如果有的話)
+                if 'dn_logits' in aux_outputs:
+                    dn_aux_outputs = {'pred_logits': aux_outputs['dn_logits'], 'pred_curves': aux_outputs['dn_curves']}
+                    dn_indices = self.get_dn_indices(targets, outputs['num_dn'])
+                    for loss in self.losses:
+                        if loss == 'cardinality': continue
+                        l_dict = self.get_loss(loss, dn_aux_outputs, targets, dn_indices, num_curves, log=False)
+                        l_dict = {k + f'_dn_{i}': v for k, v in l_dict.items()}
+                        losses.update(l_dict)
 
         return losses, indices

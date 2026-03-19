@@ -48,9 +48,9 @@ class HungarianMatcher(nn.Module):
         tgt_uppers = torch.cat([tgt[:, 2] for tgt in targets])
         tgt_lowers = torch.cat([tgt[:, 1] for tgt in targets])
 
-        # # Compute the L1 cost between lowers and uppers
-        cost_lower = torch.cdist(out_bbox[:, :, 0].view((-1, 1)), tgt_lowers.unsqueeze(-1), p=1)
-        cost_upper = torch.cdist(out_bbox[:, :, 1].view((-1, 1)), tgt_uppers.unsqueeze(-1), p=1)
+        # === 修改 1：將 .view((-1, 1)) 改為 .reshape((-1, 1)) ===
+        cost_lower = torch.cdist(out_bbox[:, :, 0].reshape((-1, 1)), tgt_lowers.unsqueeze(-1), p=1)
+        cost_upper = torch.cdist(out_bbox[:, :, 1].reshape((-1, 1)), tgt_uppers.unsqueeze(-1), p=1)
 
         # # Compute the poly cost
         tgt_points = torch.cat([tgt[:, 3:] for tgt in targets]) # 0~20 112
@@ -63,7 +63,10 @@ class HungarianMatcher(nn.Module):
         # --- 新增 Scaling 邏輯 ---
         tgt_ys = (tgt_ys - 0.5) * 2.0
         # -----------------------
-        out_polys = out_bbox[:, :, 2:].view((-1, 6))
+        
+        # === 修改 2：將 .view((-1, 6)) 改為 .reshape((-1, 6)) ===
+        out_polys = out_bbox[:, :, 2:].reshape((-1, 6))
+
         tgt_ys = tgt_ys.repeat(out_polys.shape[0], 1, 1)
         tgt_ys = tgt_ys.transpose(0, 2)
         tgt_ys = tgt_ys.transpose(0, 1)
@@ -87,8 +90,9 @@ class HungarianMatcher(nn.Module):
         # # Final cost matrix
         C = self.cost_class * cost_class + self.curves_weight * cost_polys + \
             self.lower_weight * cost_lower + self.upper_weight * cost_upper
-
-        C = C.view(bs, num_queries, -1).cpu()
+        
+        # === 修改 3：將 .view(bs, num_queries, -1) 改為 .reshape(bs, num_queries, -1) ===
+        C = C.reshape(bs, num_queries, -1).cpu()
 
         sizes = [tgt.shape[0] for tgt in targets]
 

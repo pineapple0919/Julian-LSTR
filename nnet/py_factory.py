@@ -20,15 +20,21 @@ class Network(nn.Module):
 
     def forward(self, iteration, save, viz_split,
                 xs, ys, **kwargs):
+        
+        # 1. 為了讓 kp.py 能進行去噪訓練，我們把 ys 傳進去
+        # 但不要直接修改 kwargs 字典，避免影響後續 call
+        preds, weights = self.model(*xs, targets=ys, **kwargs)
 
-        preds, weights = self.model(*xs, **kwargs)
+        # 2. 呼叫 loss 時，ys 本身就會對應到 AELoss 的 targets 參數
+        # 如果 kwargs 裡有 targets，會造成重複傳值。我們確保傳給 loss 的 kwargs 是乾淨的。
+        loss_kwargs = {k: v for k, v in kwargs.items() if k != 'targets'}
 
-        loss  = self.loss(iteration,
-                          save,
-                          viz_split,
-                          preds,
-                          ys,
-                          **kwargs)
+        loss = self.loss(iteration,
+                         save,
+                         viz_split,
+                         preds,
+                         ys,  # 這個 ys 會自動對應到 AELoss.forward 的 targets 參數
+                         **loss_kwargs)
         return loss
 
 # for model backward compatibility
