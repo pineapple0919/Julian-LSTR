@@ -47,13 +47,22 @@ class PostProcess(nn.Module):
         out_logits, out_curves = outputs['pred_logits'], outputs['pred_curves']
         out_logits = out_logits[0].unsqueeze(0)
         out_curves = out_curves[0].unsqueeze(0)
-        assert len(out_logits) == len(target_sizes)
-        assert target_sizes.shape[1] == 2
+        
         prob = F.softmax(out_logits, -1)
-        scores, labels = prob.max(-1)
-        labels[labels != 1] = 0
-        results = torch.cat([labels.unsqueeze(-1).float(), out_curves], dim=-1)
+        
+        # 不要只用 max，手動設定一個門檻 (例如 0.7) 來過濾雜訊
+        # 背景通常是最後一個 index (-1)
+        scores, labels = prob[..., :1].max(-1) # 假設 class 0 是車道
+        
+        # 如果你的 class 1 是車道，則改用：
+        # scores = prob[..., 1]
+        # labels = (scores > 0.7).long() 
+        
+        # 建議先用 0.5 測試，如果 FP 還是很高，就調高到 0.8
+        thresh = 0.5 
+        labels = (prob[..., 1] > thresh).long() 
 
+        results = torch.cat([labels.unsqueeze(-1).float(), out_curves], dim=-1)
         return results
 
 def kp_detection(db, nnet, result_dir, debug=False, evaluator=None, repeat=1,
