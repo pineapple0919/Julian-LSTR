@@ -60,7 +60,7 @@ nvidia-smi
 
 ```bash
 python train.py LSTR
-python train.py LSTR --iter 70000
+python train.py LSTR --iter 230000
 
 ```
 
@@ -76,8 +76,8 @@ python train.py LSTR --iter 70000
 
 ```bash
 # 跑數據 (指定 iteration 與配置文件)
-python test.py LSTR --testiter 70000 --split testing --modality eval
-python test.py LSTR --testiter 307500 --split testing --modality eval
+python test.py LSTR --testiter 500000 --split testing --modality eval
+python test.py LSTR --testiter 140000 --split testing --modality eval
 ```
 
 ### 2. 可視化測試結果
@@ -85,11 +85,8 @@ python test.py LSTR --testiter 307500 --split testing --modality eval
 可視化預測的車道線並顯示參數（$k, f, m \dots$）：
 
 ```bash
-# 基本可視化
-python test.py LSTR --testiter 190000 --split testing --modality eval
-
 # 儲存偵測結果圖至 ./results/LSTR/k/testing/lane_debug
-python test.py LSTR --testiter 190000 --modality eval --split testing --debug
+python test.py LSTR --testiter 500000 --modality eval --split testing --debug
 
 ```
 
