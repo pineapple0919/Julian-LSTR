@@ -86,7 +86,7 @@ python test.py LSTR --testiter 140000 --split testing --modality eval
 
 ```bash
 # 儲存偵測結果圖至 ./results/LSTR/k/testing/lane_debug
-python test.py LSTR --testiter 500000 --modality eval --split testing --debug
+python test.py LSTR --testiter 250000 --modality eval --split testing --debug
 
 ```
 
@@ -95,7 +95,7 @@ python test.py LSTR --testiter 500000 --modality eval --split testing --debug
 將您想測試的照片放入 `./images` 資料夾中，結果將輸出至 `./detections`：
 
 ```bash
-python test.py LSTR --testiter 500000 --modality images --image_root ./ --debug
+python test.py LSTR --testiter 250000 --modality images --image_root ./ --debug
 
 ```
 

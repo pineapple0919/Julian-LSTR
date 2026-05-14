@@ -136,10 +136,45 @@ def kp_detection(db, nnet, result_dir, debug=False, evaluator=None, repeat=1,
                 enc_attn_weights = enc_attn_weights[0]
                 dec_attn_weights = dec_attn_weights[0]
 
+            # ---------- 原本的程式碼 ----------
             results = postprocessors['curves'](outputs, orig_target_sizes)
 
+            # ==========================================
+            # 新增貢獻：拓撲幾何約束與動態消失點覆蓋 (Topology-Aware Post-processing)
+            # ==========================================
+            pred_temp = results[0].cpu().numpy()
+            valid_lanes = pred_temp[pred_temp[:, 0].astype(int) == 1]
+            
+            ys_search = np.linspace(-1.0, 1.0, num=500)
+            safe_horizon = -0.3 # 安全地平線先驗 (依據 TuSimple/CULane 特性可微調)
+            
+            if len(valid_lanes) >= 2:
+                params1 = valid_lanes[0, 3:] 
+                params2 = valid_lanes[1, 3:]
+                x1 = params1[0] / (ys_search - params1[1]) ** 2 + params1[2] / (ys_search - params1[1]) + params1[3] + params1[4] * ys_search - params1[5]
+                x2 = params2[0] / (ys_search - params2[1]) ** 2 + params2[2] / (ys_search - params2[1]) + params2[3] + params2[4] * ys_search - params2[5]
+                diff = np.abs(x1 - x2)
+                vp_idx = np.argmin(diff)
+                dynamic_upper_y = ys_search[vp_idx] + 0.05 
+                if dynamic_upper_y > 0.5:
+                    dynamic_upper_y = safe_horizon
+            elif len(valid_lanes) == 1:
+                predicted_upper = valid_lanes[0, 2] 
+                dynamic_upper_y = max(predicted_upper, safe_horizon)
+            else:
+                dynamic_upper_y = safe_horizon
+
+            # 【關鍵一步】：將算出的完美消失點，直接覆蓋回 results Tensor 的 upper_bound 欄位 (index 2)
+            # 這樣後續無論是 Evaluator 算分數，還是畫圖，都會用這條拉長後的完美曲線！
+            mask = results[0, :, 0] == 1
+            results[0, mask, 2] = float(dynamic_upper_y)
+            # ==========================================
+
+            # ---------- 原本送入評估器的程式碼 ----------
             if evaluator is not None:
-                evaluator.add_prediction(ind, results.cpu().numpy(), t / repeat)
+                # 注意：TuSimple 可能是 t / repeat，CULane 是 t，請維持原本的寫法
+                evaluator.add_prediction(ind, results.cpu().numpy(), t)
+
 
         if debug:
             img_lst = image_file.split('/')
@@ -213,11 +248,45 @@ def kp_detection(db, nnet, result_dir, debug=False, evaluator=None, repeat=1,
                         plt.savefig(img_path)
                         plt.close(fig)
 
+            # ---------- 取代原本的 db.draw_annotation 區塊 ----------
             if not isEncAttn and not isDecAttn:
-                preds = db.draw_annotation(ind, pred=results[0].cpu().numpy(), cls_pred=None, img=image)
+                img_h, img_w, _ = image.shape
+                overlay = image.copy()
+                RED = (0, 0, 255)
+                
+                # 直接取用我們剛剛更新過 upper 的 results
+                final_preds = results[0].cpu().numpy()
+                final_valid_lanes = final_preds[final_preds[:, 0].astype(int) == 1]
+                
+                for i, lane in enumerate(final_valid_lanes):
+                    # 取出覆蓋過後的動態 upper
+                    upper = lane[2] 
+                    params = lane[3:]
+                    
+                    # 取樣從動態 upper 畫到 1.0 (車頭)
+                    ys = np.linspace(upper, 1.0, num=100)
+                    points = np.zeros((len(ys), 2), dtype=np.int32)
+
+                    # 正確的 [-1, 1] -> 像素 映射
+                    ys_for_pixel = (ys + 1.0) / 2.0
+                    points[:, 1] = (ys_for_pixel * img_h).astype(int)
+
+                    points[:, 0] = ((params[0] / (ys - params[1]) ** 2 + 
+                                     params[2] / (ys - params[1]) + 
+                                     params[3] + params[4] * ys - 
+                                     params[5]) * img_w).astype(int)
+
+                    for current_point, next_point in zip(points[:-1], points[1:]):
+                        cv2.line(overlay, tuple(current_point), tuple(next_point), color=RED, thickness=8)
+                
+                # 混合並儲存圖片
+                w = 0.6
+                preds_img = ((1. - w) * image + w * overlay).astype(np.uint8)
+                
                 cv2.imwrite(os.path.join(lane_debug_dir, img_lst[-3] + '_'
                                          + img_lst[-2] + '_'
-                                         + os.path.basename(image_file[:-4]) + '.jpg'), preds)
+                                         + os.path.basename(image_file[:-4]) + '.jpg'), preds_img)
+                
 
     if not debug:
         exp_name = 'tusimple'
