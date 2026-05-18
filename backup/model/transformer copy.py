@@ -20,13 +20,12 @@ class Transformer(nn.Module):
     def __init__(self, d_model=512, nhead=8, num_encoder_layers=6,
                  num_decoder_layers=6, dim_feedforward=2048, dropout=0.1,
                  activation="relu", normalize_before=False,
-                 return_intermediate_dec=False,
-                 last_vit_k_ratio=0.3): # 確保這裡有加入 last_vit_k_ratio 參數
+                 return_intermediate_dec=False):
         super().__init__()
         encoder_layer = TransformerEncoderLayer(d_model, nhead, dim_feedforward,
                                                 dropout, activation, normalize_before)
         encoder_norm = nn.LayerNorm(d_model) if normalize_before else None
-        self.encoder = TransformerEncoder(encoder_layer, num_encoder_layers, encoder_norm)
+        self.encoder = TransformerEncoder(encoder_layer, num_encoder_layers, encoder_norm)  # layer, 6, norm
 
         decoder_layer = TransformerDecoderLayer(d_model, nhead, dim_feedforward,
                                                 dropout, activation, normalize_before)
@@ -36,84 +35,37 @@ class Transformer(nn.Module):
 
         self._reset_parameters()
 
-        self.d_model = d_model  
-        self.nhead = nhead  
-        
-        # [LaSt-ViT] 儲存保留比例與高斯核
-        self.last_vit_k_ratio = last_vit_k_ratio
-        self.cached_kernel = None
+        self.d_model = d_model  # 256
+        self.nhead = nhead  # 8
 
     def _reset_parameters(self):
         for p in self.parameters():
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    # [LaSt-ViT] 產生高斯核的函式 (注意縮排要跟上面的 _reset_parameters 一樣！)
-    def gaussian_kernel_1d(self, kernel_size, sigma):
-        kernel = torch.exp(-0.5 * (torch.arange(-kernel_size // 2 + 1, kernel_size // 2 + 1).float() / sigma) ** 2)
-        kernel = kernel / torch.max(kernel)
-        return kernel
-
-    def forward(self, src, mask, query_embed, pos_embed, attn_mask=None):
+    def forward(self, src, mask, query_embed, pos_embed, attn_mask=None): # 1. 新增 attn_mask 參數
         # flatten NxCxHxW to HWxNxC
         bs, c, h, w = src.shape
         src = src.flatten(2).permute(2, 0, 1)
         pos_embed = pos_embed.flatten(2).permute(2, 0, 1)
 
-        # 判斷 query_embed 維度
+        # 2. 核心修正：判斷 query_embed 是否已經由 kp.py 進行了拼接處理
+        # 如果是 2 維 [Q, C]，則進行 repeat；如果是 3 維 [Q, B, C] (DN-DETR 拼接後)，則直接使用
         if query_embed.ndim == 2:
             query_embed = query_embed.unsqueeze(1).repeat(1, bs, 1)
 
         mask = mask.flatten(1)
         tgt = torch.zeros_like(query_embed)
 
-        # memory 形狀為 [HW, B, C]
         memory, weights = self.encoder(src, src_key_padding_mask=mask, pos=pos_embed)
 
-        # =====================================================================
-        # 🟢 加入 LaSt-ViT 邏輯：在進入 Decoder 前過濾前景 (車道線)
-        # =====================================================================
-        HW, B, C = memory.shape
-        K = max(1, int(HW * self.last_vit_k_ratio)) 
-
-        if self.cached_kernel is None or self.cached_kernel.shape[-1] != C:
-            self.cached_kernel = self.gaussian_kernel_1d(C, C ** 0.5).to(memory.device)
-            self.cached_kernel = self.cached_kernel.unsqueeze(0).unsqueeze(0)
-
-        # 1. 頻域低通濾波
-        mem_fft = torch.fft.fft(memory, dim=-1)
-        mem_fft = torch.fft.fftshift(mem_fft, dim=-1)
-        mem_fft = mem_fft * self.cached_kernel
-        mem_fft = torch.fft.ifftshift(mem_fft, dim=-1)
-        mem_filtered = torch.fft.ifft(mem_fft, dim=-1).real
-
-        # 2. 計算穩定度分數
-        diff = memory / (torch.abs(mem_filtered - memory) + 1e-6) # [HW, B, C]
-        patch_score = diff.mean(dim=-1).transpose(0, 1) # [B, HW]
-
-        # 3. 取 Top-K 索引
-        _, topk_indices = torch.topk(patch_score, k=K, dim=1, largest=True) # [B, K]
-
-        # 4. 提取對應的 memory, pos_embed 和 mask
-        topk_indices_expanded = topk_indices.unsqueeze(-1).expand(-1, -1, C) # [B, K, C]
-        
-        memory_b = memory.transpose(0, 1) # [B, HW, C]
-        memory_topk = torch.gather(memory_b, 1, topk_indices_expanded).transpose(0, 1) # [K, B, C]
-        
-        pos_embed_b = pos_embed.transpose(0, 1) # [B, HW, C]
-        pos_topk = torch.gather(pos_embed_b, 1, topk_indices_expanded).transpose(0, 1) # [K, B, C]
-        
-        mask_topk = torch.gather(mask, 1, topk_indices) # [B, K]
-        # =====================================================================
-
-        # 5. Decoder 只對 Top-K 特徵進行 Cross-Attention
-        hs = self.decoder(tgt, memory_topk, memory_key_padding_mask=mask_topk,
-                          pos=pos_topk, query_pos=query_embed,
-                          tgt_mask=attn_mask)
+        # 3. 將 attn_mask 傳給 decoder (原本沒傳)
+        hs = self.decoder(tgt, memory, memory_key_padding_mask=mask,
+                        pos=pos_embed, query_pos=query_embed,
+                        tgt_mask=attn_mask) # 傳入關鍵的 Mask
 
         return hs.transpose(1, 2), memory.permute(1, 2, 0).view(bs, c, h, w), weights
-    
-    
+
 class TransformerEncoder(nn.Module):
 
     def __init__(self, encoder_layer, num_layers, norm=None):

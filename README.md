@@ -21,6 +21,8 @@
 │   ├── LSTR_CULANE.py           # CULane 版本模型入口
 │   ├── FasterNet.py             # 骨幹/模組實作（另有 py_utils/FasterNet.py）
 │   └── py_utils/                # Transformer、matcher、loss、parallel 等核心元件
+│       ├── kp.py                # DN-DETR (DeNoising DETR) 在這裡實做
+│       └── Transformer.py       # LAST-Vit 實做在這裡
 ├── db/
 │   ├── datasets.py              # 資料集名稱到類別映射
 │   ├── tusimple.py              # TuSimple 讀取與標註轉換
@@ -86,7 +88,7 @@ python test.py LSTR --testiter 140000 --split testing --modality eval
 
 ```bash
 # 儲存偵測結果圖至 ./results/LSTR/k/testing/lane_debug
-python test.py LSTR --testiter 250000 --modality eval --split testing --debug
+python test.py LSTR --testiter 250000 --split testing --modality eval --split testing --debug
 
 ```
 

@@ -10,7 +10,7 @@
         "test_split": "test",
 
         "learning_rate": 0.0001,
-        "decay_rate": 10,
+        "decay_rate": 2,
 
         "val_iter": 10000,
         "display": 10000,
@@ -19,7 +19,7 @@
         "prefetch_size": 4,
 
         "max_iter": 500000,
-        "stepsize": 400000,
+        "stepsize": 100000,
         "snapshot": 50000,
 
         "cache_dir": "./cache",
@@ -34,7 +34,7 @@
         "res_strides": [1, 2, 2, 2],
         
         "//": "=== 修改開始: 提升精準度的關鍵參數 ===",
-        "attn_dim": 256,         
+        "attn_dim": 256,
         "dim_feedforward": 1024, 
         "kps_dim": 8,
         "num_heads": 8,          
