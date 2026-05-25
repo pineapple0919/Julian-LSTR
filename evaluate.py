@@ -6,7 +6,7 @@ from scipy.spatial.distance import cdist
 
 
 # 資料路徑
-pred_path = "./results/LSTR_CULANE/500000/testing"  # 模型預測結果
+pred_path = "./results/LSTR/500000/testing/lane_debug"  # 模型預測結果
 gt_base_path = "/home/lab602/LSTRproject/CULane"  # 真值車道標註根目錄
 
 # 工具函式：讀取標註資料
